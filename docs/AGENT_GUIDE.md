@@ -70,6 +70,7 @@ If rendering fails, return the actionable FFmpeg or validation error. Do not rep
 - Dropping videos imports them into Media but does not automatically append them to the sequence.
 - Dropping timeline JSON opens it as the current project and rebuilds previews in the background.
 - **Export cuts** writes the same JSON structure used by the headless commands.
+- Since 0.1.2, **Export cuts** saves a copy without changing the active project path or clearing unsaved edits. Its dialog suggests the project folder and basename plus `-cutted.fastcut.json`; unsaved projects use the first timeline source (or first media asset). Confirm the actual chosen output path when handing off exported cuts.
 - **Export video** invokes the same renderer as `--render`.
 
 When handing work to an operator, report the timeline path, source count, clip count, total duration, validation result, and rendered output path if one was requested. Call out missing or externally located media explicitly.

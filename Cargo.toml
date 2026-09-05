@@ -1,6 +1,6 @@
 [package]
 name = "fast-cutvid"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A fast, native, open-source non-linear video cutter"
 license = "MIT"

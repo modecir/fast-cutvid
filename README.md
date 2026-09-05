@@ -25,7 +25,7 @@ Published builds are available from [GitHub Releases](https://github.com/modecir
 
 FFmpeg and FFprobe must currently be installed separately and available on `PATH`; they are used for media analysis and final export. Early macOS builds are ad-hoc signed but not Apple-notarized, and Windows/Linux packages are not yet installer-signed.
 
-**0.1.1 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.1.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
+**0.1.2 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.2.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
 
 ## Current MVP
 
@@ -85,7 +85,11 @@ One JSON project can be opened per launch. When combined with videos, the projec
 
 ## Agent rendering
 
-The GUI's **Export cuts** action creates an edit decision document that references your source media. An agent can inspect or modify that JSON and invoke the exact same renderer without opening the interface:
+The GUI's **Export cuts** action creates an edit decision document that references your source media.
+
+Since 0.1.2, Export cuts suggests the original project's folder and basename with `-cutted.fastcut.json`. For an unsaved project it uses the first timeline clip's source video, or the first media asset if the timeline is empty. Exporting writes a copy without changing the current project path or clearing unsaved edits.
+
+An agent can inspect or modify that JSON and invoke the exact same renderer without opening the interface:
 
 ```bash
 cargo run --release -- \
@@ -156,8 +160,8 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 The release workflow builds downloadable packages for macOS Apple silicon, macOS Intel, Windows x86-64, and Linux x86-64. Each package includes its SHA-256 checksum. To publish:
 
 1. Update the version in `Cargo.toml` and `Cargo.lock`, update `CHANGELOG.md`, add `docs/releases/vX.Y.Z.md`, and commit them.
-2. Create a matching version tag, for example `git tag v0.1.1`.
-3. Push the tag with `git push origin v0.1.1`.
+2. Create a matching version tag, for example `git tag v0.1.2`.
+3. Push the tag with `git push origin v0.1.2`.
 
 The tag starts `.github/workflows/release.yml`, which verifies the version, tests with FFmpeg, builds every platform package, checks archive contents/checksums, and publishes a GitHub Release using the matching notes file. It uploads into a draft first and publishes after all eight assets are attached. No release is published if any platform build fails.
 

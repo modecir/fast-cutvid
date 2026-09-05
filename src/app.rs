@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender, channel},
     thread,
     time::Instant,
@@ -53,6 +53,7 @@ pub struct FastCutApp {
     playing: bool,
     playback_started: Option<(Instant, f64)>,
     pixels_per_second: f32,
+    timeline_active: bool,
     filmstrips: HashMap<Uuid, Vec<TextureHandle>>,
     waveforms: HashMap<Uuid, Vec<f32>>,
     preview_texture: Option<TextureHandle>,
@@ -85,6 +86,7 @@ impl FastCutApp {
             playing: false,
             playback_started: None,
             pixels_per_second: 36.0,
+            timeline_active: false,
             filmstrips: HashMap::new(),
             waveforms: HashMap::new(),
             preview_texture: None,
@@ -294,6 +296,43 @@ impl FastCutApp {
                 self.status = format!("Saved {}", path.display());
             }
             Err(error) => self.status = format!("Save failed: {error}"),
+        }
+    }
+
+    fn export_cuts(&mut self) {
+        let media = self
+            .project
+            .clips
+            .first()
+            .and_then(|clip| self.project.asset(clip.asset_id))
+            .or_else(|| self.project.assets.first());
+        let default_path = cuts_export_path(
+            self.project_path.as_deref(),
+            media.map(|asset| Path::new(&asset.path)),
+            &self.project.name,
+        );
+        let mut dialog = rfd::FileDialog::new()
+            .set_file_name(
+                default_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            )
+            .add_filter("fastCutVid cuts", &["json"]);
+        if let Some(directory) = default_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            dialog = dialog.set_directory(directory);
+        }
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        // Export a copy: subsequent exports still use the original project or
+        // media location, and Save continues targeting the editable project.
+        match self.project.save(&path) {
+            Ok(()) => self.status = format!("Exported cuts to {}", path.display()),
+            Err(error) => self.status = format!("Export cuts failed: {error}"),
         }
     }
 
@@ -663,7 +702,8 @@ impl FastCutApp {
                 MenuCommand::ImportVideos => self.import_media(),
                 MenuCommand::OpenProject => self.open_project(),
                 MenuCommand::Save => self.save_project(false),
-                MenuCommand::SaveAs | MenuCommand::ExportCuts => self.save_project(true),
+                MenuCommand::SaveAs => self.save_project(true),
+                MenuCommand::ExportCuts => self.export_cuts(),
                 MenuCommand::ExportVideo => self.export_video(),
                 MenuCommand::Split => self.split_at_playhead(),
                 MenuCommand::DeleteClip => self.delete_selected(),
@@ -721,7 +761,7 @@ impl FastCutApp {
             self.save_project(false);
         }
         if export_cuts {
-            self.save_project(true);
+            self.export_cuts();
         } else if export_video {
             self.export_video();
         }
@@ -861,7 +901,7 @@ impl FastCutApp {
                             ))
                             .clicked()
                         {
-                            self.save_project(true);
+                            self.export_cuts();
                         }
                         if ui
                             .button("Save")
@@ -1208,22 +1248,7 @@ impl FastCutApp {
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
-                let zoom_focus = Id::new("timeline_zoom_focus");
-                let timeline_hovered = ui.rect_contains_pointer(ui.max_rect());
-                let pointer_pressed = ui.input(|input| input.pointer.any_pressed());
-                if timeline_hovered && pointer_pressed {
-                    ui.memory_mut(|memory| memory.request_focus(zoom_focus));
-                } else if !timeline_hovered && pointer_pressed {
-                    ui.memory_mut(|memory| memory.surrender_focus(zoom_focus));
-                }
-                let timeline_focused = ui.memory(|memory| memory.has_focus(zoom_focus));
-                let gesture_zoom = ui.input(|input| input.zoom_delta());
-                if (timeline_hovered || timeline_focused)
-                    && (gesture_zoom - 1.0).abs() > f32::EPSILON
-                {
-                    self.pixels_per_second =
-                        (self.pixels_per_second * gesture_zoom).clamp(8.0, 120.0);
-                }
+                timeline_zoom(ui, &mut self.timeline_active, &mut self.pixels_per_second);
 
                 ui.horizontal(|ui| {
                     ui.label(
@@ -2140,6 +2165,52 @@ fn short_time(seconds: f64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
+fn timeline_zoom(ui: &egui::Ui, active: &mut bool, pixels_per_second: &mut f32) {
+    let hovered = ui.rect_contains_pointer(ui.max_rect());
+    let (pressed, window_focused, zoom) = ui.input(|input| {
+        (
+            input.pointer.any_pressed(),
+            input.focused,
+            input.zoom_delta(),
+        )
+    });
+    // This is pointer activity, not keyboard focus. Requesting focus for a
+    // synthetic ID without a widget creates an invalid AccessKit tree and
+    // crashes when accessibility clients observe a timeline click.
+    if !window_focused {
+        *active = false;
+    } else if pressed {
+        *active = hovered;
+    }
+    if window_focused && (hovered || *active) && (zoom - 1.0).abs() > f32::EPSILON {
+        *pixels_per_second = (*pixels_per_second * zoom).clamp(8.0, 120.0);
+    }
+}
+
+fn cuts_export_path(project: Option<&Path>, media: Option<&Path>, name: &str) -> PathBuf {
+    let Some(source) = project.or(media) else {
+        return PathBuf::from(format!("{}-cutted.fastcut.json", safe_name(name)));
+    };
+    let stem = source.file_stem().unwrap_or_default();
+    // Treat .fastcut.json as one project suffix, but keep other dots and the
+    // original spelling (including spaces and Unicode) in the suggested name.
+    let stem = if project.is_some()
+        && Path::new(stem)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("fastcut"))
+    {
+        Path::new(stem).file_stem().unwrap_or(stem)
+    } else {
+        stem
+    };
+    let filename = format!("{}-cutted.fastcut.json", stem.to_string_lossy());
+    source
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join(filename)
+}
+
 fn safe_name(name: &str) -> String {
     let value: String = name
         .chars()
@@ -2161,5 +2232,227 @@ fn safe_name(name: &str) -> String {
         "cut".to_owned()
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+
+    fn frame(
+        ctx: &egui::Context,
+        active: &mut bool,
+        scale: &mut f32,
+        events: Vec<egui::Event>,
+        focused: bool,
+    ) {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                focused,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::TopBottomPanel::bottom("timeline_test")
+                    .exact_height(200.0)
+                    .show(ctx, |ui| {
+                        timeline_zoom(ui, active, scale);
+                        ui.label("Timeline");
+                    });
+            },
+        );
+        let tree = output
+            .platform_output
+            .accesskit_update
+            .expect("accessibility enabled");
+        assert!(
+            tree.nodes.iter().any(|(id, _)| *id == tree.focus),
+            "Focused ID must exist in the accessibility tree: {:?}",
+            tree.focus
+        );
+    }
+
+    fn pointer(pos: Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn timeline_click_and_drag_keep_accessibility_focus_valid() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut active = false;
+        let mut scale = 36.0;
+        frame(&ctx, &mut active, &mut scale, vec![], true);
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            pointer(Pos2::new(100.0, 500.0), true),
+            true,
+        );
+        assert!(active);
+        assert!(ctx.memory(|memory| memory.focused()).is_none());
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![egui::Event::PointerMoved(Pos2::new(450.0, 500.0))],
+            true,
+        );
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            pointer(Pos2::new(450.0, 500.0), false),
+            true,
+        );
+        assert!(active);
+    }
+
+    #[test]
+    fn pinch_works_while_hovered_or_active_and_stops_after_outside_click() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut active = false;
+        let mut scale = 36.0;
+        frame(&ctx, &mut active, &mut scale, vec![], true);
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![
+                egui::Event::PointerMoved(Pos2::new(100.0, 500.0)),
+                egui::Event::Zoom(2.0),
+            ],
+            true,
+        );
+        assert_eq!(scale, 72.0);
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            pointer(Pos2::new(100.0, 500.0), true),
+            true,
+        );
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            pointer(Pos2::new(100.0, 500.0), false),
+            true,
+        );
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![
+                egui::Event::PointerMoved(Pos2::new(100.0, 100.0)),
+                egui::Event::Zoom(0.5),
+            ],
+            true,
+        );
+        assert_eq!(scale, 36.0);
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            pointer(Pos2::new(100.0, 100.0), true),
+            true,
+        );
+        assert!(!active);
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![egui::Event::Zoom(2.0)],
+            true,
+        );
+        assert_eq!(scale, 36.0);
+    }
+
+    #[test]
+    fn losing_window_focus_clears_timeline_activity() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut active = true;
+        let mut scale = 36.0;
+        frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![egui::Event::Zoom(2.0)],
+            false,
+        );
+        assert!(!active);
+        assert_eq!(scale, 36.0);
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn cuts_default_to_project_folder_before_media_folder() {
+        assert_eq!(
+            cuts_export_path(
+                Some(Path::new("projects/Interview.fastcut.json")),
+                Some(Path::new("media/source.mov")),
+                "Untitled"
+            ),
+            PathBuf::from("projects/Interview-cutted.fastcut.json")
+        );
+    }
+
+    #[test]
+    fn cuts_handle_plain_json_and_case_insensitive_compound_suffix() {
+        for source in ["projects/Edit.json", "projects/Edit.FASTCUT.JSON"] {
+            assert_eq!(
+                cuts_export_path(Some(Path::new(source)), None, "Untitled"),
+                PathBuf::from("projects/Edit-cutted.fastcut.json")
+            );
+        }
+    }
+
+    #[test]
+    fn cuts_default_to_media_folder_preserving_the_source_name() {
+        assert_eq!(
+            cuts_export_path(
+                None,
+                Some(Path::new("media/My café.take.2.MOV")),
+                "Untitled"
+            ),
+            PathBuf::from("media/My café.take.2-cutted.fastcut.json")
+        );
+    }
+
+    #[test]
+    fn cuts_support_absolute_and_bare_source_paths() {
+        let source = std::env::temp_dir().join("clip.mp4");
+        assert_eq!(
+            cuts_export_path(None, Some(&source), "Untitled"),
+            std::env::temp_dir().join("clip-cutted.fastcut.json")
+        );
+        assert_eq!(
+            cuts_export_path(None, Some(Path::new("clip.mp4")), "Untitled"),
+            PathBuf::from("./clip-cutted.fastcut.json")
+        );
+    }
+
+    #[test]
+    fn empty_project_uses_its_name() {
+        assert_eq!(
+            cuts_export_path(None, None, "My edit"),
+            PathBuf::from("my-edit-cutted.fastcut.json")
+        );
     }
 }

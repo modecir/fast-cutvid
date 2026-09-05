@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.2) — 2026-09-05
+
+- Fix a crash when clicking or dragging the timeline with accessibility active; preserve timeline pinch zoom without assigning focus to a nonexistent widget.
+- Default Export cuts to the original project or media folder with a `-cutted.fastcut.json` filename; retain the original project path and unsaved-edit state when exporting a copy.
+- Add regression tests for accessibility-safe timeline interactions, pinch-zoom routing, and export paths.
+- Link [fastcutvid.com](https://fastcutvid.com) from the README.
+
+[Compare 0.1.1 → 0.1.2](https://github.com/modecir/fast-cutvid/compare/v0.1.1...v0.1.2)
+
 ## [0.1.1](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.1) — 2026-09-05
 
 ### Added

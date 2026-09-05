@@ -10,9 +10,9 @@ This guide is for people using the desktop application to assemble and cut video
 
 If the commands are installed somewhere else, launch fastCutVid with `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` set to their executable paths.
 
-## Install version 0.1.1
+## Install version 0.1.2
 
-Download a platform archive from [release 0.1.1](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.1), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
+Download a platform archive from [release 0.1.2](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.2), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
 
 ### macOS 12 or newer
 
@@ -50,7 +50,7 @@ Download both the archive and its `.sha256` file into the same directory. On mac
 
 ### Platform limitations
 
-macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.1; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
+macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.2; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
 
 For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGENTS.md).
 
@@ -106,6 +106,7 @@ If the status bar reports missing media, restore the files at the recorded paths
 ## Deliver the cut
 
 - **Export cuts** saves agent-readable timeline JSON for another person, tool, or AI agent to inspect and render.
+- Since 0.1.2, **Export cuts** defaults to the original project's folder and basename plus `-cutted.fastcut.json`. Without a saved project, it uses the first timeline clip's source video (or the first media asset if the timeline is empty). For example, `Interview.mov` suggests `Interview-cutted.fastcut.json` beside the video. You can change the name or folder in the dialog. Exporting writes a copy without changing the current project path or clearing unsaved edits; **Save** and **Save As** are unchanged.
 - **Export video** renders the sequence to MP4 using the resolution, frame rate, and codecs stored in the project.
 
 Export to a new destination; do not choose a source-media path. Wait for the status bar to report completion before moving or closing the output.
