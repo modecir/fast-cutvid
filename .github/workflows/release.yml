@@ -1,6 +1,13 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish
+        required: true
+        default: v0.1.0
+        type: string
   push:
     tags:
       - "v*"
@@ -8,8 +15,11 @@ on:
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -46,12 +56,19 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Select Python for release checks
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - name: Verify release version
         shell: bash
         run: |
-          python3 -c 'import os, tomllib; v = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]; assert os.environ["GITHUB_REF_NAME"] == "v" + v, "Tag must match Cargo.toml version"'
-          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+          python3 -c 'import os, tomllib; v = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]; assert os.environ["RELEASE_TAG"] == "v" + v, "Tag must match Cargo.toml version"'
+          test -f "docs/releases/${RELEASE_TAG}.md"
 
       - name: Install Linux build dependencies
         if: matrix.package == 'linux'
@@ -101,9 +118,9 @@ jobs:
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           app="dist/fastCutVid.app"
-          archive="fastcutvid-${GITHUB_REF_NAME}-${ASSET}.tar.gz"
+          archive="fastcutvid-${RELEASE_TAG}-${ASSET}.tar.gz"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp "target/${TARGET}/release/fast-cutvid" "$app/Contents/MacOS/fast-cutvid"
           sed "s/__VERSION__/${version}/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
@@ -124,7 +141,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
         run: |
-          folder="fastcutvid-${GITHUB_REF_NAME}-${ASSET}"
+          folder="fastcutvid-${RELEASE_TAG}-${ASSET}"
           archive="$folder.tar.gz"
           mkdir -p "dist/$folder"
           cp "target/${TARGET}/release/fast-cutvid" "dist/$folder/"
@@ -140,7 +157,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
         run: |
-          $folder = "fastcutvid-$env:GITHUB_REF_NAME-$env:ASSET"
+          $folder = "fastcutvid-$env:RELEASE_TAG-$env:ASSET"
           $stage = "dist/$folder"
           $archive = "dist/$folder.zip"
           New-Item -ItemType Directory -Force $stage | Out-Null
@@ -172,6 +189,8 @@ jobs:
     steps:
       - name: Check out release notes
         uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Download platform packages
         uses: actions/download-artifact@v5
@@ -181,13 +200,13 @@ jobs:
           merge-multiple: true
 
       - name: Verify all release archives
-        run: python3 packaging/verify_release.py dist "$GITHUB_REF_NAME"
+        run: python3 packaging/verify_release.py dist "$RELEASE_TAG"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft --notes-file "docs/releases/${GITHUB_REF_NAME}.md" --title "fastCutVid $GITHUB_REF_NAME"
-          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" = 8
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --notes-file "docs/releases/${RELEASE_TAG}.md" --title "fastCutVid $RELEASE_TAG"
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" = 8
+          gh release edit "$RELEASE_TAG" --draft=false --latest
