@@ -1,0 +1,7 @@
+interface:
+  display_name: "fastCutVid Timelines"
+  short_description: "Construct and validate fastCutVid timelines"
+  icon_small: "./assets/fastcutvid-small.png"
+  icon_large: "./assets/fastcutvid-large.png"
+  brand_color: "#71F0B6"
+  default_prompt: "Use $fast-cut-timelines to construct and validate a fastCutVid project from my source videos."

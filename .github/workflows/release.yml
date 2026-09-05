@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Apple silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+            asset: macos-arm64
+            package: macos
+          - label: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: macos-x86_64
+            package: macos
+          - label: Windows x86-64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            asset: windows-x86_64
+            package: windows
+          - label: Linux x86-64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+            package: linux
+
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          python3 -c 'import os, tomllib; v = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]; assert os.environ["GITHUB_REF_NAME"] == "v" + v, "Tag must match Cargo.toml version"'
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+
+      - name: Install Linux build dependencies
+        if: matrix.package == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgtk-3-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install FFmpeg for macOS render tests
+        if: matrix.package == 'macos'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+
+      - name: Install FFmpeg for Windows render tests
+        if: matrix.package == 'windows'
+        run: choco install ffmpeg --no-progress -y
+
+      - name: Check media tools
+        run: |
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Select stable Rust
+        shell: bash
+        run: |
+          rustup set profile minimal
+          rustup update stable
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test release CLI
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/fast-cutvid"
+          if [[ "${{ matrix.package }}" == windows ]]; then binary="${binary}.exe"; fi
+          "$binary" --version
+          "$binary" --help
+
+      - name: Package macOS app
+        if: matrix.package == 'macos'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          app="dist/fastCutVid.app"
+          archive="fastcutvid-${GITHUB_REF_NAME}-${ASSET}.tar.gz"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "target/${TARGET}/release/fast-cutvid" "$app/Contents/MacOS/fast-cutvid"
+          sed "s/__VERSION__/${version}/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          cp packaging/macos/fastCutVid.icns "$app/Contents/Resources/fastCutVid.icns"
+          cp README.md LICENSE AGENTS.md CLAUDE.md "$app/Contents/Resources/"
+          cp -R docs .agents assets "$app/Contents/Resources/"
+          chmod +x "$app/Contents/MacOS/fast-cutvid"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/fast-cutvid" --version
+          tar -czf "dist/$archive" -C dist "fastCutVid.app"
+          shasum -a 256 "dist/$archive" | sed 's#dist/##' > "dist/$archive.sha256"
+
+      - name: Package Linux binary
+        if: matrix.package == 'linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          folder="fastcutvid-${GITHUB_REF_NAME}-${ASSET}"
+          archive="$folder.tar.gz"
+          mkdir -p "dist/$folder"
+          cp "target/${TARGET}/release/fast-cutvid" "dist/$folder/"
+          cp README.md LICENSE AGENTS.md CLAUDE.md "dist/$folder/"
+          cp -R docs .agents assets "dist/$folder/"
+          tar -czf "dist/$archive" -C dist "$folder"
+          sha256sum "dist/$archive" | sed 's#dist/##' > "dist/$archive.sha256"
+
+      - name: Package Windows executable
+        if: matrix.package == 'windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          $folder = "fastcutvid-$env:GITHUB_REF_NAME-$env:ASSET"
+          $stage = "dist/$folder"
+          $archive = "dist/$folder.zip"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "target/$env:TARGET/release/fast-cutvid.exe" $stage
+          Copy-Item packaging/windows/fastCutVid.ico $stage
+          Copy-Item README.md, LICENSE, AGENTS.md, CLAUDE.md $stage
+          Copy-Item -Path docs, .agents, assets -Destination $stage -Recurse
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $stage), [System.IO.Path]::GetFullPath($archive))
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          "$hash  $folder.zip" | Set-Content -NoNewline "$archive.sha256"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v6
+
+      - name: Download platform packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify all release archives
+        run: python3 packaging/verify_release.py dist "$GITHUB_REF_NAME"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft --notes-file "docs/releases/${GITHUB_REF_NAME}.md" --title "fastCutVid $GITHUB_REF_NAME"
+          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" = 8
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

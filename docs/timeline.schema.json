@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fastcut.video/schemas/timeline-v1.json",
+  "title": "fastCutVid timeline",
+  "type": "object",
+  "required": ["format", "name", "assets", "clips", "render"],
+  "properties": {
+    "format": { "const": "fastcut.timeline/v1" },
+    "name": { "type": "string", "minLength": 1 },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "path", "duration", "width", "height", "fps", "has_audio"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "duration": { "type": "number", "exclusiveMinimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "fps": { "type": "number", "exclusiveMinimum": 0 },
+          "has_audio": { "type": "boolean" },
+          "rotation": { "type": "integer", "enum": [0, 90, 180, 270], "default": 0 }
+        }
+      }
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "asset_id", "source_in", "source_out", "audio_gain", "muted"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "asset_id": { "type": "string", "format": "uuid" },
+          "source_in": { "type": "number", "minimum": 0 },
+          "source_out": { "type": "number", "exclusiveMinimum": 0 },
+          "audio_gain": { "type": "number", "minimum": 0 },
+          "muted": { "type": "boolean" }
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "required": ["width", "height", "fps", "video_codec", "audio_codec"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "integer", "minimum": 1 },
+        "video_codec": { "type": "string", "minLength": 1 },
+        "audio_codec": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+/target/
+/dist/
+.env
+.env.*
+CLAUDE.local.md
+.claude/settings.local.json
+*.fastcut.json
+.DS_Store
