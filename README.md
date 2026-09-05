@@ -23,7 +23,7 @@ Published builds are available from [GitHub Releases](https://github.com/modecir
 
 FFmpeg and FFprobe must currently be installed separately and available on `PATH`; they are used for media analysis and final export. Early macOS builds are ad-hoc signed but not Apple-notarized, and Windows/Linux packages are not yet installer-signed.
 
-**0.1.0 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md) and [release notes](docs/releases/v0.1.0.md) for setup and limitations.
+**0.1.1 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.1.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
 
 ## Current MVP
 
@@ -64,6 +64,22 @@ If FFmpeg is not on `PATH`, point fastCutVid to the binaries:
 ```bash
 FASTCUT_FFMPEG=/path/to/ffmpeg FASTCUT_FFPROBE=/path/to/ffprobe cargo run --release
 ```
+
+## Open files at launch
+
+Pass a project or one or more videos as positional arguments (available since 0.1.1):
+
+```bash
+fast-cutvid "edit.fastcut.json"
+fast-cutvid "first clip.mp4" "second.mov"
+fast-cutvid "edit.fastcut.json" "extra footage.mp4"
+# From a source checkout:
+cargo run --release -- "edit.fastcut.json"
+# Installed macOS app:
+/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid "/absolute/path/edit.fastcut.json"
+```
+
+One JSON project can be opened per launch. When combined with videos, the project opens first and videos import into its media bin in the background; they are not automatically appended to the timeline. Relative arguments resolve from the terminal's working directory, while media references inside JSON resolve from the project directory. Quote paths containing spaces; use `--` before filenames beginning with `-`. These GUI arguments cannot be combined with `--validate` or `--render`. On Windows, use `fast-cutvid.exe` instead.
 
 ## Agent rendering
 
@@ -137,9 +153,9 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 
 The release workflow builds downloadable packages for macOS Apple silicon, macOS Intel, Windows x86-64, and Linux x86-64. Each package includes its SHA-256 checksum. To publish:
 
-1. Update the version in `Cargo.toml` and `Cargo.lock`, add `docs/releases/vX.Y.Z.md`, and commit them.
-2. Create a matching version tag, for example `git tag v0.1.0`.
-3. Push the tag with `git push origin v0.1.0`.
+1. Update the version in `Cargo.toml` and `Cargo.lock`, update `CHANGELOG.md`, add `docs/releases/vX.Y.Z.md`, and commit them.
+2. Create a matching version tag, for example `git tag v0.1.1`.
+3. Push the tag with `git push origin v0.1.1`.
 
 The tag starts `.github/workflows/release.yml`, which verifies the version, tests with FFmpeg, builds every platform package, checks archive contents/checksums, and publishes a GitHub Release using the matching notes file. It uploads into a draft first and publishes after all eight assets are attached. No release is published if any platform build fails.
 

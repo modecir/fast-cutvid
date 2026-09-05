@@ -34,7 +34,8 @@ def verify(directory: Path, tag: str) -> None:
             executable = "fast-cutvid.exe" if suffix == ".zip" else "fast-cutvid"
             assert root + executable in names
         for required in (
-            "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md",
+            "README.md", "CHANGELOG.md", "LICENSE", "AGENTS.md", "CLAUDE.md",
+            f"docs/releases/{tag}.md",
             "docs/LOCAL_AGENTS.md", "docs/AGENT_GUIDE.md", "docs/OPERATOR_GUIDE.md",
             "docs/timeline.schema.json", "assets/fastcutvid-logo-readme.png",
             ".agents/skills/fast-cut-timelines/SKILL.md",

@@ -10,9 +10,9 @@ This guide is for people using the desktop application to assemble and cut video
 
 If the commands are installed somewhere else, launch fastCutVid with `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` set to their executable paths.
 
-## Install version 0.1.0
+## Install version 0.1.1
 
-Download a platform archive from [the first release](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.0), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
+Download a platform archive from [release 0.1.1](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.1), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
 
 ### macOS 12 or newer
 
@@ -50,7 +50,7 @@ Download both the archive and its `.sha256` file into the same directory. On mac
 
 ### Platform limitations
 
-macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.0; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
+macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.1; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
 
 For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGENTS.md).
 
@@ -62,6 +62,8 @@ For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGE
 4. Double-click an item in Media or select **+ Timeline** to append the whole source to the end of the sequence.
 
 Dropping a valid `.json` or `.fastcut.json` file opens that complete project instead of adding it to the current cut. Save the current project before opening another timeline if its changes matter.
+
+Since 0.1.1, the app also accepts files at launch: `fast-cutvid "edit.fastcut.json"` opens a project, and `fast-cutvid "clip one.mp4" "clip two.mov"` imports videos. You can combine one project with videos; the project opens first, then videos enter its media bin without being added to the sequence. See [launch examples](../README.md#open-files-at-launch) for macOS and Cargo commands. Missing files, unsupported extensions, and multiple projects are rejected; invalid project contents are reported in the app without importing the additional videos.
 
 ## Navigate and review
 

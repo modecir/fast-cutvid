@@ -1,10 +1,10 @@
 # Use fastCutVid with local agents
 
-fastCutVid 0.1.0 gives agents a file format and a command-line renderer. There is no built-in model, API key requirement, chat service, or MCP server. Your chosen agent reads source metadata, writes a `.fastcut.json` timeline, validates it, and optionally renders it. You can review the same timeline in the desktop app.
+fastCutVid 0.1.1 gives agents a file format and a command-line renderer. There is no built-in model, API key requirement, chat service, or MCP server. Your chosen agent reads source metadata, writes a `.fastcut.json` timeline, validates it, and optionally renders it. You can review the same timeline in the desktop app.
 
 ## Prepare your workspace
 
-1. Download and extract the correct build from [v0.1.0](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.0), and install FFmpeg and FFprobe. Follow the [operator guide](OPERATOR_GUIDE.md).
+1. Download and extract the correct build from [v0.1.1](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.1), and install FFmpeg and FFprobe. Follow the [operator guide](OPERATOR_GUIDE.md).
 2. Create a working folder containing your videos, any transcript with source timestamps, and the intended output folder. Give the agent access to that folder.
 3. Keep the bundled `docs`, `.agents`, `AGENTS.md`, and `CLAUDE.md` together. They are at the extracted package root on Windows/Linux; on macOS, they are inside `fastCutVid.app/Contents/Resources` (Finder → Show Package Contents). You can copy those four entries together into your working folder; do not copy just `SKILL.md`, because its references are relative.
 4. Tell the agent the absolute path to the executable and the working folder. Confirm the executable runs with `--version` and that `ffprobe -version` works in the agent's execution environment.
@@ -14,7 +14,7 @@ You can instead clone the source repository and open it as the agent's project:
 ```bash
 git clone https://github.com/modecir/fast-cutvid.git
 cd fast-cutvid
-git checkout v0.1.0
+git checkout v0.1.1
 cargo build --release --locked
 ```
 

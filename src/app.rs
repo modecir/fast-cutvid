@@ -70,13 +70,13 @@ pub struct FastCutApp {
 }
 
 impl FastCutApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, opening_paths: Vec<PathBuf>) -> Self {
         #[cfg(target_os = "macos")]
         crate::menu_macos::install(&cc.egui_ctx);
         configure_style(&cc.egui_ctx);
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let (import_tx, import_rx) = channel();
-        Self {
+        let mut app = Self {
             project: Project::default(),
             project_path: None,
             selected_clip: None,
@@ -99,7 +99,22 @@ impl FastCutApp {
             show_shortcuts: false,
             show_help: false,
             logo_texture,
+        };
+        // Open the project first regardless of argument order, so its channel
+        // reset cannot discard imports requested by the same launch.
+        if let Some(path) = opening_paths.iter().find(|path| is_json_path(path))
+            && !app.open_project_path(path.clone())
+        {
+            return app;
         }
+        let videos = opening_paths
+            .into_iter()
+            .filter(|path| is_video_path(path))
+            .collect::<Vec<_>>();
+        if !videos.is_empty() {
+            app.queue_video_imports(videos);
+        }
+        app
     }
 
     fn import_media(&mut self) {
@@ -292,7 +307,7 @@ impl FastCutApp {
         self.open_project_path(path);
     }
 
-    fn open_project_path(&mut self, path: PathBuf) {
+    fn open_project_path(&mut self, path: PathBuf) -> bool {
         match Project::load(&path) {
             Ok(project) => {
                 // Detach any analysis jobs from the previous project. Their
@@ -349,8 +364,12 @@ impl FastCutApp {
                 };
                 self.dirty = false;
                 self.load_preview_at_playhead(false);
+                true
             }
-            Err(error) => self.status = format!("Open failed: {error}"),
+            Err(error) => {
+                self.status = format!("Open failed: {error}");
+                false
+            }
         }
     }
 
@@ -2088,7 +2107,7 @@ fn scrub_time(
     })
 }
 
-fn is_video_path(path: &std::path::Path) -> bool {
+pub(crate) fn is_video_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -2110,7 +2129,7 @@ fn is_video_path(path: &std::path::Path) -> bool {
         })
 }
 
-fn is_json_path(path: &std::path::Path) -> bool {
+pub(crate) fn is_json_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))

@@ -6,7 +6,7 @@ on:
       tag:
         description: Existing version tag to build and publish
         required: true
-        default: v0.1.0
+        default: v0.1.1
         type: string
   push:
     tags:
@@ -125,7 +125,7 @@ jobs:
           cp "target/${TARGET}/release/fast-cutvid" "$app/Contents/MacOS/fast-cutvid"
           sed "s/__VERSION__/${version}/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
           cp packaging/macos/fastCutVid.icns "$app/Contents/Resources/fastCutVid.icns"
-          cp README.md LICENSE AGENTS.md CLAUDE.md "$app/Contents/Resources/"
+          cp README.md CHANGELOG.md LICENSE AGENTS.md CLAUDE.md "$app/Contents/Resources/"
           cp -R docs .agents assets "$app/Contents/Resources/"
           chmod +x "$app/Contents/MacOS/fast-cutvid"
           codesign --force --deep --sign - "$app"
@@ -145,7 +145,7 @@ jobs:
           archive="$folder.tar.gz"
           mkdir -p "dist/$folder"
           cp "target/${TARGET}/release/fast-cutvid" "dist/$folder/"
-          cp README.md LICENSE AGENTS.md CLAUDE.md "dist/$folder/"
+          cp README.md CHANGELOG.md LICENSE AGENTS.md CLAUDE.md "dist/$folder/"
           cp -R docs .agents assets "dist/$folder/"
           tar -czf "dist/$archive" -C dist "$folder"
           sha256sum "dist/$archive" | sed 's#dist/##' > "dist/$archive.sha256"
@@ -163,7 +163,7 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item "target/$env:TARGET/release/fast-cutvid.exe" $stage
           Copy-Item packaging/windows/fastCutVid.ico $stage
-          Copy-Item README.md, LICENSE, AGENTS.md, CLAUDE.md $stage
+          Copy-Item README.md, CHANGELOG.md, LICENSE, AGENTS.md, CLAUDE.md $stage
           Copy-Item -Path docs, .agents, assets -Destination $stage -Recurse
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $stage), [System.IO.Path]::GetFullPath($archive))

@@ -66,6 +66,7 @@ If rendering fails, return the actionable FFmpeg or validation error. Do not rep
 
 ## Interoperate with the GUI
 
+- Since 0.1.1, launch `fast-cutvid "edit.fastcut.json"` to open a project, or `fast-cutvid "clip one.mp4" "clip two.mov"` to import media. A project plus videos opens the project first, then imports the videos into its media bin. Only one project is accepted per launch. Use the installed executable path or `cargo run --release --` as needed. These positional arguments cannot be mixed with headless flags.
 - Dropping videos imports them into Media but does not automatically append them to the sequence.
 - Dropping timeline JSON opens it as the current project and rebuilds previews in the background.
 - **Export cuts** writes the same JSON structure used by the headless commands.
