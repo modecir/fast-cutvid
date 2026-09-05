@@ -2,6 +2,8 @@
 
 ![fastCutVid logo](assets/fastcutvid-logo-readme.png)
 
+Website: [fastcutvid.com](https://fastcutvid.com)
+
 fastCutVid is a native, open-source video cutter for macOS, Windows, and Linux. It combines a focused video-editing timeline with a portable JSON cut format that humans and AI agents can render in exactly the same way.
 
 There is no HTML, JavaScript, Electron, or webview. The interface is Rust/egui and media processing is delegated to FFmpeg.
