@@ -462,15 +462,33 @@ mod tests {
             }
         }
         let rotated = temp.path().join("rotated.mp4");
-        assert!(
+        let output = Command::new(media::ffmpeg_binary())
+            .args(["-v", "error", "-display_rotation", "90", "-i"])
+            .arg(temp.path().join("portrait.mp4"))
+            .args(["-c", "copy"])
+            .arg(&rotated)
+            .output()
+            .unwrap();
+        // Older FFmpeg uses output metadata; newer versions need the input
+        // display_rotation option to write the rotation matrix.
+        let output = if !output.status.success()
+            && String::from_utf8_lossy(&output.stderr)
+                .contains("Unrecognized option 'display_rotation'")
+        {
             Command::new(media::ffmpeg_binary())
-                .args(["-v", "error", "-display_rotation", "90", "-i"])
+                .args(["-v", "error", "-i"])
                 .arg(temp.path().join("portrait.mp4"))
-                .args(["-c", "copy"])
+                .args(["-c", "copy", "-metadata:s:v:0", "rotate=90"])
                 .arg(&rotated)
-                .status()
+                .output()
                 .unwrap()
-                .success()
+        } else {
+            output
+        };
+        assert!(
+            output.status.success(),
+            "Could not create rotated fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
         let frame = media::thumbnail_image(&media::thumbnail(&rotated, 0.0).unwrap()).unwrap();
         assert_eq!(frame.size, [240, 135]);
