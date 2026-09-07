@@ -10,9 +10,9 @@ This guide is for people using the desktop application to assemble and cut video
 
 If the commands are installed somewhere else, launch fastCutVid with `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` set to their executable paths.
 
-## Install version 0.1.3
+## Install version 0.1.4
 
-Download a platform archive from [release 0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
+Download a platform archive from [release 0.1.4](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.4), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
 
 ### macOS 12 or newer
 
@@ -50,7 +50,7 @@ Download both the archive and its `.sha256` file into the same directory. On mac
 
 ### Platform limitations
 
-macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.3; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
+macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.4; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
 
 For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGENTS.md).
 
@@ -58,8 +58,12 @@ For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGE
 
 1. Launch fastCutVid.
 2. Select **+ Import**, press `Cmd/Ctrl+I`, or drop one or more video files onto the window.
-3. Media appears immediately while filmstrips and waveforms are analyzed in the background. The status bar reports when analysis is complete.
+3. Media appears immediately. Timeline frames and waveform sections appear as they are decoded, independently of each other. Reopening unchanged media reuses cached analysis. The status bar reports when analysis is complete.
 4. Double-click an item in Media or select **+ Timeline** to append the whole source to the end of the sequence.
+
+The preview and timeline frames follow the video’s original display shape, including portrait, square, and rotated footage. Background analysis uses a limited number of workers to keep editing responsive. Switching projects cancels pending analysis for the previous project.
+
+Analysis is stored in the system cache directory under `fastCutVid/analysis-v1` (`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows, and `$XDG_CACHE_HOME` or `~/.cache` on Linux). Set `FASTCUT_CACHE_DIR` to choose a different base folder. Cache entries are rebuilt when source size or modification time changes; unreadable entries are regenerated automatically. Old entries are pruned toward 256 MiB when opening the app or another project. The cache can be deleted safely.
 
 Dropping a valid `.fastcut`, `.fastcut.json`, or `.json` file opens that complete project instead of adding it to the current cut. Save the current project before opening another timeline if its changes matter.
 
@@ -72,7 +76,7 @@ The app also accepts files at launch: `fast-cutvid "edit.fastcut"` opens a proje
 - Press `Left` or `Right` to jump one second.
 - Press `Shift+Left` or `Shift+Right` to move one source frame.
 - Press `Up` or `Down` to move to the previous or next edit.
-- Pinch over the timeline or use its Zoom control to change scale.
+- Pinch over the timeline to zoom around the mouse cursor, keeping the time beneath it in place until a timeline edge is reached. You can also use the Zoom control to change scale.
 - Read the upper clip lane as video frames and the lower lane as audio amplitude. Quiet waveform areas usually indicate pauses, but always review playback before cutting.
 
 Press `?` for every keyboard shortcut. Press `F1` for the in-app quick start.

@@ -1,3 +1,4 @@
+mod analysis;
 mod app;
 #[cfg(target_os = "macos")]
 mod documents_macos;

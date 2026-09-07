@@ -1,5 +1,5 @@
 use std::{
-    io::Read,
+    io::{self, BufRead, BufReader},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -13,10 +13,14 @@ use std::{
 
 use uuid::Uuid;
 
-use crate::{media::ffmpeg_binary, model::MediaAsset};
+use crate::{
+    media::{display_scale, ffmpeg_binary},
+    model::MediaAsset,
+};
 
 pub struct DecodedFrame {
     pub size: [usize; 2],
+    pub display_size: [f32; 2],
     pub rgba: Vec<u8>,
 }
 
@@ -49,10 +53,7 @@ impl PreviewPlayer {
         _volume: f32,
     ) {
         self.stop();
-        // A fixed 16:9 decode surface makes the raw frame size predictable.
-        // FFmpeg letterboxes the source inside it, preserving rotation, sample
-        // aspect ratio, and portrait/landscape display aspect ratios.
-        let (width, height) = (960, 540);
+        // Self-describing frames preserve portrait, square, and anamorphic media.
         let (sender, receiver) = sync_channel(2);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
@@ -62,8 +63,6 @@ impl PreviewPlayer {
                 Path::new(&path),
                 source_time,
                 length,
-                width,
-                height,
                 realtime,
                 sender,
                 stop_thread,
@@ -102,28 +101,32 @@ impl Drop for PreviewPlayer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decode_frames(
     path: &Path,
     source_time: f64,
     length: f64,
-    width: u32,
-    height: u32,
     realtime: bool,
     sender: SyncSender<DecodedFrame>,
     stop: Arc<AtomicBool>,
 ) {
     let mut command = Command::new(ffmpeg_binary());
     command
-        .args(["-v", "error", "-ss"])
+        .args(["-v", "error", "-nostdin", "-threads", "2", "-ss"])
         .arg(format!("{source_time:.4}"))
         .arg("-i")
         .arg(path)
         .args(["-t", &format!("{:.4}", length.max(0.04)), "-an", "-vf"])
-        .arg(format!(
-            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=rgba"
-        ))
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
+        .arg(format!("{},fps=30", display_scale(960)))
+        .args([
+            "-filter_threads",
+            "1",
+            "-threads",
+            "1",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "ppm",
+        ])
         .arg(if realtime { "pipe:1" } else { "-frames:v" });
     if !realtime {
         command.args(["1", "pipe:1"]);
@@ -133,23 +136,19 @@ fn decode_frames(
     let Ok(mut child) = command.spawn() else {
         return;
     };
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(stdout) = child.stdout.take() else {
         return;
     };
-    let frame_len = width as usize * height as usize * 4;
+    let mut stdout = BufReader::new(stdout);
     loop {
         if stop.load(Ordering::Relaxed) {
             let _ = child.kill();
             break;
         }
-        let mut rgba = vec![0; frame_len];
-        if stdout.read_exact(&mut rgba).is_err() {
+        let Ok(frame) = read_frame(&mut stdout) else {
             break;
-        }
-        let _ = sender.try_send(DecodedFrame {
-            size: [width as usize, height as usize],
-            rgba,
-        });
+        };
+        let _ = sender.try_send(frame);
         if !realtime {
             break;
         }
@@ -157,4 +156,49 @@ fn decode_frames(
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// FFmpeg's PPM encoder supplies dimensions per frame, without a padded canvas.
+fn read_frame(reader: &mut impl BufRead) -> io::Result<DecodedFrame> {
+    fn token(reader: &mut impl BufRead) -> io::Result<String> {
+        let mut bytes = Vec::new();
+        loop {
+            let mut byte = [0];
+            reader.read_exact(&mut byte)?;
+            if byte[0].is_ascii_whitespace() {
+                if !bytes.is_empty() {
+                    break;
+                }
+            } else {
+                bytes.push(byte[0]);
+                if bytes.len() > 32 {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
+        }
+        String::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData.into())
+    }
+    if token(reader)? != "P6" {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let width = token(reader)?
+        .parse::<usize>()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    let height = token(reader)?
+        .parse::<usize>()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    if width == 0 || height == 0 || width > 960 || height > 960 || token(reader)? != "255" {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let mut rgb = vec![0; width * height * 3];
+    reader.read_exact(&mut rgb)?;
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for pixel in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+    }
+    Ok(DecodedFrame {
+        size: [width, height],
+        display_size: [width as f32, height as f32],
+        rgba,
+    })
 }

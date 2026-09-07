@@ -1,6 +1,6 @@
 [package]
 name = "fast-cutvid"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "A fast, native, open-source non-linear video cutter"
 license = "MIT"
@@ -28,3 +28,9 @@ objc2-foundation = { version = "0.3.2", features = ["objc2-core-services", "NSAp
 [profile.release]
 lto = "thin"
 strip = true
+
+# AVPlayer must be exercised on the process's main thread, not a test worker.
+[[test]]
+name = "native_playback"
+path = "tests/native_playback.rs"
+harness = false

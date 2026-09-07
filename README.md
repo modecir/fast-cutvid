@@ -25,7 +25,7 @@ Published builds are available from [GitHub Releases](https://github.com/modecir
 
 FFmpeg and FFprobe must currently be installed separately and available on `PATH`; they are used for media analysis and final export. Early macOS builds are ad-hoc signed but not Apple-notarized, and Windows/Linux packages are not yet installer-signed.
 
-**0.1.3 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.3.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
+**0.1.4 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.4.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
 
 ## Current MVP
 
@@ -35,9 +35,10 @@ FFmpeg and FFprobe must currently be installed separately and available on `PATH
 - Native macOS menu bar with File, Edit, Playback, View, Window, and Help commands
 - Aspect-safe, letterboxed native video preview with playback and seeking
 - Native AVFoundation video/audio playback on macOS with one shared media clock
-- Filmstrip timeline with source-aware frame sampling and speech-visible waveforms
+- Preview and timeline frames follow each source’s display aspect ratio, including portrait and square footage
+- Progressive filmstrip and waveform loading, bounded background decoding, and a persistent media cache
 - Progressive non-blocking imports with concurrent frame and audio analysis
-- Trackpad pinch-to-zoom when the timeline is hovered or focused
+- Trackpad pinch-to-zoom around the mouse cursor when the timeline is hovered or focused
 - Split, trim, delete, and clip reordering
 - Non-destructive source in/out points and per-clip audio controls
 - Project/cut export as readable `fastcut.timeline/v1` JSON
@@ -158,7 +159,6 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 
 - Multi-track video and audio
 - Drag-and-drop insertion and ripple/slip tools
-- Persistent media cache for instant filmstrips and waveforms on project reopen
 - Undo/redo history
 - Hardware-accelerated export presets
 - Windows Media Foundation and Linux GStreamer native playback backends
@@ -169,15 +169,15 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 
 The release workflow builds downloadable packages for macOS Apple silicon, macOS Intel, Windows x86-64, and Linux x86-64. Each package includes its SHA-256 checksum. To publish:
 
-1. Update the version in `Cargo.toml` and `Cargo.lock`, update `CHANGELOG.md`, add `docs/releases/vX.Y.Z.md`, and commit them.
-2. Create a matching version tag, for example `git tag v0.1.3`.
-3. Push the tag with `git push origin v0.1.3`.
+1. Create `codex/release/<version>` from `dev`. Update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`, add `docs/releases/vX.Y.Z.md`, and commit them.
+2. Merge the release into `main` through a pull request after CI passes. Create an annotated `vX.Y.Z` tag on that merge commit and push the tag.
+3. Merge `main` back into `dev` through a pull request. See [Git Flow](docs/GIT_FLOW.md) for the complete release and hotfix process.
 
 The tag starts `.github/workflows/release.yml`, which verifies the version, tests with FFmpeg, builds every platform package, checks archive contents/checksums, and publishes a GitHub Release using the matching notes file. It uploads into a draft first and publishes after all eight assets are attached. No release is published if any platform build fails.
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep the v1 timeline format backward compatible and run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` before submitting.
+Issues and pull requests are welcome. Start each change on `codex/feature/<name>` from `dev` and open pull requests against `dev`; `main` is reserved for final releases. Follow [Git Flow](docs/GIT_FLOW.md), keep the v1 timeline format backward compatible, and run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` before submitting.
 
 ## License
 
