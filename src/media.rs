@@ -122,91 +122,86 @@ fn normalize_rotation(degrees: f64) -> i32 {
     (quarter_turns.rem_euclid(4)) * 90
 }
 
-/// Decode an evenly spaced filmstrip in one FFmpeg invocation. The images keep
-/// their source aspect ratio; layout code decides how to letterbox each cell.
-pub fn timeline_thumbnails(path: &Path, duration: f64, count: usize) -> Result<Vec<ColorImage>> {
-    if duration > 45.0 {
-        return seek_thumbnails(path, duration, count);
-    }
-    let temp = tempfile::tempdir()?;
-    let pattern = temp.path().join("frame-%03d.jpg");
-    let sample_rate = count as f64 / duration.max(0.1);
+/// Scale to square pixels without baking a landscape canvas into the image.
+/// `dar` includes sample aspect ratio and FFmpeg's automatic display rotation.
+pub fn display_scale(max_edge: u32) -> String {
+    format!(
+        "scale=w='max(1,round(min({max_edge},{max_edge}*dar)))':h='max(1,round(min({max_edge},{max_edge}/dar)))':flags=fast_bilinear,setsar=1"
+    )
+}
+
+pub fn thumbnail(path: &Path, timestamp: f64) -> Result<Vec<u8>> {
+    // Input seeking decodes only the preceding GOP, including for short files.
+    // Limit each decoder so background imports leave CPU available for playback.
     let output = Command::new(ffmpeg_binary())
-        .args(["-v", "error", "-i"])
-        .arg(path)
-        .arg("-vf")
-        .arg(format!(
-            "fps={sample_rate:.8},scale=240:-2:force_original_aspect_ratio=decrease"
-        ))
-        .args(["-frames:v", &count.to_string(), "-q:v", "4"])
-        .arg(&pattern)
-        .output()
-        .with_context(|| "FFmpeg was not found. Install FFmpeg or set FASTCUT_FFMPEG")?;
-    if !output.status.success() {
-        bail!("could not generate timeline filmstrip");
-    }
-
-    let mut paths = std::fs::read_dir(temp.path())?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect::<Vec<_>>();
-    paths.sort();
-    let mut frames = Vec::with_capacity(paths.len());
-    for frame_path in paths {
-        let image = image::open(frame_path)?.to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        frames.push(ColorImage::from_rgba_unmultiplied(size, image.as_raw()));
-    }
-    Ok(frames)
-}
-
-/// Long files should not be decoded from beginning to end just to populate a
-/// filmstrip. Input-side seeks jump near each requested timestamp instead.
-fn seek_thumbnails(path: &Path, duration: f64, count: usize) -> Result<Vec<ColorImage>> {
-    let mut frames = Vec::with_capacity(count);
-    for index in 0..count {
-        let timestamp = duration * (index as f64 + 0.5) / count as f64;
-        let output = Command::new(ffmpeg_binary())
-            .args(["-v", "error", "-ss"])
-            .arg(format!("{timestamp:.4}"))
-            .arg("-i")
-            .arg(path)
-            .args([
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=240:-2:force_original_aspect_ratio=decrease",
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "mjpeg",
-                "pipe:1",
-            ])
-            .output()
-            .with_context(|| "FFmpeg was not found. Install FFmpeg or set FASTCUT_FFMPEG")?;
-        if !output.status.success() {
-            continue;
-        }
-        let image = image::load_from_memory(&output.stdout)?.to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        frames.push(ColorImage::from_rgba_unmultiplied(size, image.as_raw()));
-    }
-    if frames.is_empty() {
-        bail!("could not generate timeline filmstrip");
-    }
-    Ok(frames)
-}
-
-/// Produce 50 normalized peak values per second. Samples are consumed as a
-/// stream, so even long source files do not require a large audio buffer.
-pub fn waveform(path: &Path) -> Result<Vec<f32>> {
-    const SAMPLE_RATE: usize = 4_000;
-    const SAMPLES_PER_PEAK: usize = SAMPLE_RATE / 50;
-
-    let mut child = Command::new(ffmpeg_binary())
-        .args(["-v", "error", "-i"])
+        .args(["-v", "error", "-nostdin", "-threads", "1", "-ss"])
+        .arg(format!("{timestamp:.6}"))
+        .arg("-i")
         .arg(path)
         .args([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-filter_threads",
+            "1",
+            "-vf",
+        ])
+        .arg(display_scale(240))
+        .args([
+            "-frames:v",
+            "1",
+            "-threads",
+            "1",
+            "-q:v",
+            "4",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "mjpeg",
+            "pipe:1",
+        ])
+        .output()
+        .with_context(|| "FFmpeg was not found. Install FFmpeg or set FASTCUT_FFMPEG")?;
+    if !output.status.success() || output.stdout.is_empty() {
+        bail!(
+            "could not generate timeline frame: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
+pub fn thumbnail_image(bytes: &[u8]) -> Result<ColorImage> {
+    let image = image::load_from_memory(bytes)?.to_rgba8();
+    anyhow::ensure!(
+        image.width() <= 240 && image.height() <= 240,
+        "invalid cached frame size"
+    );
+    let size = [image.width() as usize, image.height() as usize];
+    Ok(ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
+}
+
+pub const PEAKS_PER_SECOND: usize = 50;
+
+/// Stream raw peaks in small batches; returning false cancels and reaps FFmpeg.
+/// Normalization belongs to the view so early peaks can appear immediately.
+pub fn waveform(path: &Path, mut emit: impl FnMut(Vec<f32>) -> bool) -> Result<Vec<f32>> {
+    const SAMPLE_RATE: usize = 4_000;
+    const SAMPLES_PER_PEAK: usize = SAMPLE_RATE / PEAKS_PER_SECOND;
+
+    let mut child = Command::new(ffmpeg_binary())
+        .args(["-v", "error", "-nostdin", "-threads", "1", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            "0:a:0",
             "-vn",
+            "-sn",
+            "-dn",
+            "-filter_threads",
+            "1",
             "-ac",
             "1",
             "-ar",
@@ -219,47 +214,55 @@ pub fn waveform(path: &Path) -> Result<Vec<f32>> {
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| "FFmpeg was not found. Install FFmpeg or set FASTCUT_FFMPEG")?;
-    let mut stdout = child.stdout.take().context("could not read FFmpeg audio")?;
-    let mut peaks = Vec::new();
-    let mut peak = 0.0_f32;
-    let mut count = 0;
-    let mut buffer = [0_u8; 65_536];
-    let mut carry = Vec::with_capacity(3);
-    loop {
-        let read = stdout.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        let mut bytes = Vec::with_capacity(carry.len() + read);
-        bytes.extend_from_slice(&carry);
-        bytes.extend_from_slice(&buffer[..read]);
-        let aligned = bytes.len() / 4 * 4;
-        for sample in bytes[..aligned].chunks_exact(4) {
-            peak = peak.max(f32::from_le_bytes(sample.try_into().expect("four bytes")).abs());
-            count += 1;
-            if count == SAMPLES_PER_PEAK {
-                peaks.push(peak);
-                peak = 0.0;
-                count = 0;
+    let result = (|| -> Result<Vec<f32>> {
+        let mut stdout = child.stdout.take().context("could not read FFmpeg audio")?;
+        let mut peaks = Vec::new();
+        let mut sent = 0;
+        let mut peak = 0.0_f32;
+        let mut count = 0;
+        let mut buffer = [0_u8; 65_539];
+        let mut carry = 0;
+        loop {
+            let read = stdout.read(&mut buffer[carry..])?;
+            if read == 0 {
+                break;
+            }
+            let total = carry + read;
+            let aligned = total / 4 * 4;
+            for sample in buffer[..aligned].chunks_exact(4) {
+                let value = f32::from_le_bytes(sample.try_into().expect("four bytes"));
+                if value.is_finite() {
+                    peak = peak.max(value.abs());
+                }
+                count += 1;
+                if count == SAMPLES_PER_PEAK {
+                    peaks.push(peak);
+                    peak = 0.0;
+                    count = 0;
+                }
+            }
+            buffer.copy_within(aligned..total, 0);
+            carry = total - aligned;
+            // First paint after 0.2s of audio; later batches cover about 2s.
+            if peaks.len() - sent >= if sent == 0 { 10 } else { 100 } {
+                anyhow::ensure!(emit(peaks[sent..].to_vec()), "analysis cancelled");
+                sent = peaks.len();
             }
         }
-        carry.clear();
-        carry.extend_from_slice(&bytes[aligned..]);
-    }
-    if count > 0 {
-        peaks.push(peak);
+        if count > 0 {
+            peaks.push(peak);
+        }
+        if sent < peaks.len() {
+            anyhow::ensure!(emit(peaks[sent..].to_vec()), "analysis cancelled");
+        }
+        Ok(peaks)
+    })();
+    if result.is_err() {
+        let _ = child.kill();
     }
     let status = child.wait()?;
-    if !status.success() {
-        bail!("could not decode audio waveform");
-    }
-
-    let max = peaks.iter().copied().fold(0.0_f32, f32::max);
-    if max > 0.000_01 {
-        for peak in &mut peaks {
-            *peak = (*peak / max).sqrt();
-        }
-    }
+    let peaks = result?;
+    anyhow::ensure!(status.success(), "could not decode audio waveform");
     Ok(peaks)
 }
 

@@ -58,8 +58,12 @@ For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGE
 
 1. Launch fastCutVid.
 2. Select **+ Import**, press `Cmd/Ctrl+I`, or drop one or more video files onto the window.
-3. Media appears immediately while filmstrips and waveforms are analyzed in the background. The status bar reports when analysis is complete.
+3. Media appears immediately. Timeline frames and waveform sections appear as they are decoded, independently of each other. Reopening unchanged media reuses cached analysis. The status bar reports when analysis is complete.
 4. Double-click an item in Media or select **+ Timeline** to append the whole source to the end of the sequence.
+
+The preview and timeline frames follow the video’s original display shape, including portrait, square, and rotated footage. Background analysis uses a limited number of workers to keep editing responsive. Switching projects cancels pending analysis for the previous project.
+
+Analysis is stored in the system cache directory under `fastCutVid/analysis-v1` (`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows, and `$XDG_CACHE_HOME` or `~/.cache` on Linux). Set `FASTCUT_CACHE_DIR` to choose a different base folder. Cache entries are rebuilt when source size or modification time changes; unreadable entries are regenerated automatically. Old entries are pruned toward 256 MiB when opening the app or another project. The cache can be deleted safely.
 
 Dropping a valid `.fastcut`, `.fastcut.json`, or `.json` file opens that complete project instead of adding it to the current cut. Save the current project before opening another timeline if its changes matter.
 

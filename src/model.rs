@@ -138,7 +138,7 @@ impl Project {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaAsset {
     pub id: Uuid,
     pub name: String,
@@ -153,7 +153,7 @@ pub struct MediaAsset {
     pub rotation: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
     pub id: Uuid,
     pub asset_id: Uuid,

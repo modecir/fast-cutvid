@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Preserve source display aspect ratio in the preview and timeline filmstrip, including portrait, square, and rotated footage.
+- Show frames and waveform sections progressively with bounded background decoding and cancellation when switching projects.
+- Cache media analysis across sessions, invalidate changed sources, and regenerate damaged cache entries.
+- Limit timeline drawing to the visible portion and budget background texture uploads to keep editing responsive.
+
 ## [0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3) — 2026-09-07
 
 - Use `.fastcut` for new project saves and cut exports, with legacy JSON projects still supported.

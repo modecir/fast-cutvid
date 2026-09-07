@@ -35,7 +35,8 @@ FFmpeg and FFprobe must currently be installed separately and available on `PATH
 - Native macOS menu bar with File, Edit, Playback, View, Window, and Help commands
 - Aspect-safe, letterboxed native video preview with playback and seeking
 - Native AVFoundation video/audio playback on macOS with one shared media clock
-- Filmstrip timeline with source-aware frame sampling and speech-visible waveforms
+- Preview and timeline frames follow each source’s display aspect ratio, including portrait and square footage
+- Progressive filmstrip and waveform loading, bounded background decoding, and a persistent media cache
 - Progressive non-blocking imports with concurrent frame and audio analysis
 - Trackpad pinch-to-zoom when the timeline is hovered or focused
 - Split, trim, delete, and clip reordering
@@ -158,7 +159,6 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 
 - Multi-track video and audio
 - Drag-and-drop insertion and ripple/slip tools
-- Persistent media cache for instant filmstrips and waveforms on project reopen
 - Undo/redo history
 - Hardware-accelerated export presets
 - Windows Media Foundation and Linux GStreamer native playback backends

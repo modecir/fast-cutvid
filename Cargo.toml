@@ -28,3 +28,9 @@ objc2-foundation = { version = "0.3.2", features = ["objc2-core-services", "NSAp
 [profile.release]
 lto = "thin"
 strip = true
+
+# AVPlayer must be exercised on the process's main thread, not a test worker.
+[[test]]
+name = "native_playback"
+path = "tests/native_playback.rs"
+harness = false

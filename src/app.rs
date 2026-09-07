@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::mpsc::{Receiver, channel},
     thread,
     time::Instant,
 };
@@ -13,8 +13,9 @@ use eframe::egui::{
 use uuid::Uuid;
 
 use crate::{
-    media::{format_time, probe, timeline_thumbnails, waveform},
-    model::{Clip, MediaAsset, Project},
+    analysis::{FRAME_COUNT, ImportEvent, MediaAnalysis},
+    media::{PEAKS_PER_SECOND, format_time},
+    model::{Clip, Project},
     player::PreviewPlayer,
     render::{RenderEvent, render_project},
 };
@@ -27,21 +28,17 @@ const TEXT_MUTED: Color32 = Color32::from_rgb(145, 151, 165);
 const ACCENT: Color32 = Color32::from_rgb(113, 240, 182);
 const PURPLE: Color32 = Color32::from_rgb(116, 101, 245);
 
-enum ImportEvent {
-    Asset(MediaAsset),
-    Metadata {
-        asset_id: Uuid,
-        width: u32,
-        height: u32,
-        rotation: i32,
-    },
-    Visuals {
-        asset_id: Uuid,
-        frames: Option<Vec<ColorImage>>,
-        peaks: Option<Vec<f32>>,
-    },
-    Error(String),
-    Finished,
+#[derive(Default)]
+struct Waveform {
+    peaks: Vec<f32>,
+    maximum: f32,
+}
+
+impl Waveform {
+    fn extend(&mut self, peaks: Vec<f32>) {
+        self.maximum = peaks.iter().copied().fold(self.maximum, f32::max);
+        self.peaks.extend(peaks);
+    }
 }
 
 pub struct FastCutApp {
@@ -54,14 +51,16 @@ pub struct FastCutApp {
     playback_started: Option<(Instant, f64)>,
     pixels_per_second: f32,
     timeline_active: bool,
-    filmstrips: HashMap<Uuid, Vec<TextureHandle>>,
-    waveforms: HashMap<Uuid, Vec<f32>>,
+    filmstrips: HashMap<Uuid, Vec<Option<TextureHandle>>>,
+    waveforms: HashMap<Uuid, Waveform>,
     preview_texture: Option<TextureHandle>,
+    preview_display_size: Option<Vec2>,
     player: PreviewPlayer,
     status: String,
     render_rx: Option<Receiver<anyhow::Result<RenderEvent>>>,
     render_progress: Option<f32>,
-    import_tx: Sender<ImportEvent>,
+    analysis: MediaAnalysis,
+    analysis_failed: bool,
     import_rx: Receiver<ImportEvent>,
     imports_pending: usize,
     dirty: bool,
@@ -79,7 +78,7 @@ impl FastCutApp {
         }
         configure_style(&cc.egui_ctx);
         let logo_texture = load_logo_texture(&cc.egui_ctx);
-        let (import_tx, import_rx) = channel();
+        let (analysis, import_rx) = MediaAnalysis::new();
         let mut app = Self {
             project: Project::default(),
             project_path: None,
@@ -93,11 +92,13 @@ impl FastCutApp {
             filmstrips: HashMap::new(),
             waveforms: HashMap::new(),
             preview_texture: None,
+            preview_display_size: None,
             player: PreviewPlayer::default(),
             status: "Ready — import media to begin".to_owned(),
             render_rx: None,
             render_progress: None,
-            import_tx,
+            analysis,
+            analysis_failed: false,
             import_rx,
             imports_pending: 0,
             dirty: false,
@@ -153,21 +154,11 @@ impl FastCutApp {
             paths.len(),
             if paths.len() == 1 { "" } else { "s" }
         );
+        if self.imports_pending == paths.len() {
+            self.analysis_failed = false;
+        }
         for path in paths {
-            let sender = self.import_tx.clone();
-            thread::spawn(move || match probe(&path) {
-                Ok(asset) => {
-                    let _ = sender.send(ImportEvent::Asset(asset.clone()));
-                    analyze_asset(asset, sender);
-                }
-                Err(error) => {
-                    let _ = sender.send(ImportEvent::Error(format!(
-                        "Could not import {}: {error}",
-                        path.display()
-                    )));
-                    let _ = sender.send(ImportEvent::Finished);
-                }
-            });
+            self.analysis.import(path);
         }
     }
 
@@ -253,6 +244,15 @@ impl FastCutApp {
     }
 
     fn load_preview_at_playhead(&mut self, realtime: bool) {
+        #[cfg(target_os = "macos")]
+        if realtime {
+            if let Err(error) = self.player.start_timeline(&self.project, self.playhead) {
+                self.player.stop();
+                self.playing = false;
+                self.status = format!("Playback failed: {error}");
+            }
+            return;
+        }
         let Some((_, clip_start, clip)) = self.project.clip_at(self.playhead) else {
             self.player.stop();
             return;
@@ -352,11 +352,10 @@ impl FastCutApp {
     fn open_project_path(&mut self, path: PathBuf) -> bool {
         match Project::load(&path) {
             Ok(project) => {
-                // Detach any analysis jobs from the previous project. Their
-                // senders keep the old channel, so stale results cannot leak
-                // into a timeline that was just opened by file drop.
-                let (import_tx, import_rx) = channel();
-                self.import_tx = import_tx;
+                // Cancel old jobs and disconnect their results before switching projects.
+                let (analysis, import_rx) = MediaAnalysis::new();
+                self.analysis = analysis;
+                self.analysis_failed = false;
                 self.import_rx = import_rx;
                 self.imports_pending = 0;
                 self.project = project;
@@ -368,23 +367,13 @@ impl FastCutApp {
                 self.playback_started = None;
                 self.player.stop();
                 self.preview_texture = None;
+                self.preview_display_size = None;
                 self.filmstrips.clear();
                 self.waveforms.clear();
                 let assets = self.project.assets.clone();
                 self.imports_pending += assets.len();
                 for asset in assets {
-                    let sender = self.import_tx.clone();
-                    thread::spawn(move || {
-                        if let Ok(metadata) = probe(&PathBuf::from(&asset.path)) {
-                            let _ = sender.send(ImportEvent::Metadata {
-                                asset_id: asset.id,
-                                width: metadata.width,
-                                height: metadata.height,
-                                rotation: metadata.rotation,
-                            });
-                        }
-                        analyze_asset(asset, sender);
-                    });
+                    self.analysis.rebuild(asset);
                 }
                 let missing = self
                     .project
@@ -394,7 +383,7 @@ impl FastCutApp {
                     .count();
                 self.status = if missing == 0 {
                     format!(
-                        "Opened {} — rebuilding media previews in the background",
+                        "Opened {} — loading media previews in the background",
                         path.display()
                     )
                 } else {
@@ -462,7 +451,7 @@ impl FastCutApp {
             Id::new("file_drop_overlay"),
         ));
         painter.rect_filled(rect, 12.0, Color32::from_black_alpha(220));
-        painter.rect_stroke(rect, 12.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+        painter.rect_stroke(rect, 12.0, Stroke::new(2.0_f32, ACCENT), StrokeKind::Inside);
         painter.text(
             rect.center() - Vec2::new(0.0, 12.0),
             Align2::CENTER_CENTER,
@@ -506,7 +495,12 @@ impl FastCutApp {
     }
 
     fn update_background_work(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = self.import_rx.try_recv() {
+        // Bound texture uploads per UI update, including a warm-cache import.
+        let started = Instant::now();
+        while started.elapsed() < std::time::Duration::from_millis(4) {
+            let Ok(event) = self.import_rx.try_recv() else {
+                break;
+            };
             match event {
                 ImportEvent::Asset(asset) => {
                     self.selected_asset = Some(asset.id);
@@ -540,33 +534,34 @@ impl FastCutApp {
                         }
                     }
                 }
-                ImportEvent::Visuals {
+                ImportEvent::Frame {
                     asset_id,
-                    frames,
-                    peaks,
+                    index,
+                    image,
                 } => {
-                    if let Some(frames) = frames {
-                        let textures = frames
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, image)| {
-                                ctx.load_texture(
-                                    format!("filmstrip-{asset_id}-{index}"),
-                                    image,
-                                    TextureOptions::LINEAR,
-                                )
-                            })
-                            .collect();
-                        self.filmstrips.insert(asset_id, textures);
-                    }
-                    if let Some(peaks) = peaks {
-                        self.waveforms.insert(asset_id, peaks);
-                    }
+                    let frames = self
+                        .filmstrips
+                        .entry(asset_id)
+                        .or_insert_with(|| vec![None; FRAME_COUNT]);
+                    frames[index] = Some(ctx.load_texture(
+                        format!("filmstrip-{asset_id}-{index}"),
+                        image,
+                        TextureOptions::LINEAR,
+                    ));
                 }
-                ImportEvent::Error(error) => self.status = error,
+                ImportEvent::Peaks { asset_id, peaks } => {
+                    self.waveforms.entry(asset_id).or_default().extend(peaks);
+                }
+                ImportEvent::Error(error) => {
+                    self.analysis_failed = true;
+                    self.status = error;
+                }
                 ImportEvent::Finished => {
                     self.imports_pending = self.imports_pending.saturating_sub(1);
-                    if self.imports_pending == 0 && self.render_rx.is_none() {
+                    if self.imports_pending == 0
+                        && self.render_rx.is_none()
+                        && !self.analysis_failed
+                    {
                         self.status = "Media analysis complete".to_owned();
                     }
                 }
@@ -580,6 +575,7 @@ impl FastCutApp {
         }
 
         if let Some(frame) = self.player.latest() {
+            self.preview_display_size = Some(Vec2::from(frame.display_size));
             let image = ColorImage::from_rgba_unmultiplied(frame.size, &frame.rgba);
             if let Some(texture) = &mut self.preview_texture {
                 texture.set(image, TextureOptions::LINEAR);
@@ -615,6 +611,28 @@ impl FastCutApp {
         if !self.playing {
             return;
         }
+        #[cfg(target_os = "macos")]
+        {
+            if !self.player.timeline_matches(&self.project) {
+                self.load_preview_at_playhead(true);
+            }
+            if let Some(time) = self.player.timeline_time() {
+                self.playhead = time.min(self.project.duration());
+                if self.playhead >= self.project.duration() - 0.000_02 {
+                    self.playhead = self.project.duration();
+                    self.playing = false;
+                    self.playback_started = None;
+                    self.player.stop();
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        #[cfg(not(target_os = "macos"))]
+        self.update_clip_playback(ctx);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn update_clip_playback(&mut self, ctx: &egui::Context) {
         if let Some(source_time) = self.player.source_time() {
             let mut cursor = 0.0;
             for clip in &self.project.clips {
@@ -866,7 +884,7 @@ impl FastCutApp {
             .frame(
                 Frame::new()
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .inner_margin(Margin::symmetric(16, 10)),
             )
             .show(ctx, |ui| {
@@ -938,7 +956,7 @@ impl FastCutApp {
             .frame(
                 Frame::new()
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .inner_margin(Margin::same(14)),
             )
             .show(ctx, |ui| {
@@ -992,7 +1010,7 @@ impl FastCutApp {
                                         if let Some(texture) = self
                                             .filmstrips
                                             .get(&asset.id)
-                                            .and_then(|frames| frames.first())
+                                            .and_then(|frames| frames.iter().flatten().next())
                                         {
                                             let (rect, _) = ui.allocate_exact_size(
                                                 Vec2::new(92.0, 54.0),
@@ -1057,7 +1075,7 @@ impl FastCutApp {
             .frame(
                 Frame::new()
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .inner_margin(Margin::same(14)),
             )
             .show(ctx, |ui| {
@@ -1164,12 +1182,25 @@ impl FastCutApp {
         let available = ui.available_size();
         let controls_height = 54.0;
         let max_video = Vec2::new(available.x, (available.y - controls_height).max(100.0));
-        let target = fit_size(Vec2::new(16.0, 9.0), max_video);
+        let source_size = self
+            .preview_display_size
+            .or_else(|| {
+                let (_, _, clip) = self.project.clip_at(self.playhead)?;
+                let asset = self.project.asset(clip.asset_id)?;
+                let (width, height) = if matches!(asset.rotation, 90 | 270) {
+                    (asset.height, asset.width)
+                } else {
+                    (asset.width, asset.height)
+                };
+                Some(Vec2::new(width as f32, height as f32))
+            })
+            .unwrap_or(max_video);
+        let target = fit_size(source_size, max_video);
         ui.vertical_centered(|ui| {
             let (rect, response) = ui.allocate_exact_size(target, Sense::click());
             ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
             if let Some(texture) = &self.preview_texture {
-                let image_size = fit_size(texture.size_vec2(), rect.size());
+                let image_size = fit_size(source_size, rect.size());
                 let image_rect = Rect::from_center_size(rect.center(), image_size);
                 ui.painter().image(
                     texture.id(),
@@ -1247,7 +1278,7 @@ impl FastCutApp {
             .frame(
                 Frame::new()
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
@@ -1331,7 +1362,7 @@ impl FastCutApp {
                             let x = origin_x + tick as f32 * self.pixels_per_second;
                             ui.painter().line_segment(
                                 [Pos2::new(x, ruler_y + 18.0), Pos2::new(x, ruler_y + 27.0)],
-                                Stroke::new(1.0, BORDER),
+                                Stroke::new(1.0_f32, BORDER),
                             );
                             ui.painter().text(
                                 Pos2::new(x + 3.0, ruler_y + 7.0),
@@ -1382,7 +1413,7 @@ impl FastCutApp {
                                 rect,
                                 5.0,
                                 Stroke::new(
-                                    if selected { 2.0 } else { 1.0 },
+                                    if selected { 2.0_f32 } else { 1.0_f32 },
                                     if selected { ACCENT } else { PURPLE },
                                 ),
                                 StrokeKind::Inside,
@@ -1414,17 +1445,11 @@ impl FastCutApp {
                                     );
                                 }
                                 if let Some(peaks) = self.waveforms.get(&clip.asset_id) {
-                                    paint_waveform(
-                                        ui.painter(),
-                                        audio_rect,
-                                        peaks,
-                                        &clip,
-                                        asset.duration,
-                                    );
+                                    paint_waveform(ui.painter(), audio_rect, peaks, &clip);
                                 } else {
                                     ui.painter().line_segment(
                                         [audio_rect.left_center(), audio_rect.right_center()],
-                                        Stroke::new(1.0, Color32::from_rgb(58, 77, 88)),
+                                        Stroke::new(1.0_f32, Color32::from_rgb(58, 77, 88)),
                                     );
                                 }
                                 ui.painter().text(
@@ -1532,7 +1557,7 @@ impl FastCutApp {
                                 Pos2::new(playhead_x, ruler_y + 18.0),
                                 Pos2::new(playhead_x, end_y + 4.0),
                             ],
-                            Stroke::new(2.0, ACCENT),
+                            Stroke::new(2.0_f32, ACCENT),
                         );
                         ui.painter().circle_filled(
                             Pos2::new(playhead_x, ruler_y + 17.0),
@@ -1594,7 +1619,7 @@ impl FastCutApp {
             .frame(
                 Frame::window(&ctx.style())
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER)),
+                    .stroke(Stroke::new(1.0_f32, BORDER)),
             )
             .show(ctx, |ui| {
                 shortcut_section(ui, "PLAYBACK & NAVIGATION");
@@ -1668,7 +1693,7 @@ impl FastCutApp {
             .frame(
                 Frame::window(&ctx.style())
                     .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER)),
+                    .stroke(Stroke::new(1.0_f32, BORDER)),
             )
             .show(ctx, |ui| {
                 ui.label(
@@ -1746,28 +1771,6 @@ impl eframe::App for FastCutApp {
     }
 }
 
-fn analyze_asset(asset: MediaAsset, sender: Sender<ImportEvent>) {
-    let frame_path = PathBuf::from(&asset.path);
-    let frame_duration = asset.duration;
-    let frame_job = thread::spawn(move || timeline_thumbnails(&frame_path, frame_duration, 16));
-
-    let audio_job = asset.has_audio.then(|| {
-        let audio_path = PathBuf::from(&asset.path);
-        thread::spawn(move || waveform(&audio_path))
-    });
-
-    let frames = frame_job.join().ok().and_then(Result::ok);
-    let peaks = audio_job
-        .and_then(|job| job.join().ok())
-        .and_then(Result::ok);
-    let _ = sender.send(ImportEvent::Visuals {
-        asset_id: asset.id,
-        frames,
-        peaks,
-    });
-    let _ = sender.send(ImportEvent::Finished);
-}
-
 #[derive(Clone, Copy)]
 enum EditorIcon {
     Play,
@@ -1789,7 +1792,7 @@ fn icon_button(ui: &mut egui::Ui, icon: EditorIcon, tooltip: &str) -> egui::Resp
     };
     ui.painter().rect_filled(rect, 4.0, fill);
     ui.painter()
-        .rect_stroke(rect, 4.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        .rect_stroke(rect, 4.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
     paint_icon(ui.painter(), rect.shrink(6.0), icon, Color32::WHITE);
     response.on_hover_text(tooltip)
 }
@@ -1831,7 +1834,7 @@ fn load_logo_texture(ctx: &egui::Context) -> TextureHandle {
 
 fn paint_icon(painter: &egui::Painter, rect: Rect, icon: EditorIcon, color: Color32) {
     let center = rect.center();
-    let stroke = Stroke::new(1.8, color);
+    let stroke = Stroke::new(1.8_f32, color);
     match icon {
         EditorIcon::Play => {
             painter.add(egui::Shape::convex_polygon(
@@ -2003,9 +2006,9 @@ fn configure_style(ctx: &egui::Context) {
     visuals.extreme_bg_color = Color32::from_rgb(10, 12, 16);
     visuals.widgets.inactive.bg_fill = SURFACE;
     visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(42, 47, 58);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(75, 83, 101));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(75, 83, 101));
     visuals.widgets.active.bg_fill = Color32::from_rgb(52, 58, 70);
     visuals.selection.bg_fill = PURPLE;
     visuals.hyperlink_color = ACCENT;
@@ -2035,84 +2038,99 @@ fn fit_size(content: Vec2, bounds: Vec2) -> Vec2 {
     content * scale
 }
 
+fn filmstrip_cell_width(size: Vec2, height: f32) -> f32 {
+    (height * size.x / size.y.max(1.0)).max(1.0)
+}
+
 fn paint_filmstrip(
     painter: &egui::Painter,
     rect: Rect,
-    frames: &[TextureHandle],
+    frames: &[Option<TextureHandle>],
     clip: &Clip,
     asset_duration: f64,
     pixels_per_second: f32,
 ) {
-    if frames.is_empty() || rect.width() <= 1.0 {
+    let visible = rect.intersect(painter.clip_rect());
+    if !visible.is_positive() {
         return;
     }
-    let painter = painter.with_clip_rect(rect);
-    let cell_width = 88.0_f32.min((clip.duration() as f32 * pixels_per_second).max(18.0));
-    let cell_count = (rect.width() / cell_width).ceil().max(1.0) as usize;
-    for cell in 0..cell_count {
+    let Some(first) = frames.iter().flatten().next() else {
+        return;
+    };
+    let painter = painter.with_clip_rect(visible);
+    let cell_width = filmstrip_cell_width(first.size_vec2(), rect.height());
+    let first_cell = ((visible.left() - rect.left()) / cell_width).floor() as usize;
+    let last_cell = ((visible.right() - rect.left()) / cell_width).ceil() as usize;
+    for cell in first_cell..last_cell {
+        // Keep full-sized cells at clip edges; the painter clips the partial cell.
         let left = rect.left() + cell as f32 * cell_width;
-        let cell_rect = Rect::from_min_max(
+        let cell_rect = Rect::from_min_size(
             Pos2::new(left, rect.top()),
-            Pos2::new((left + cell_width).min(rect.right()), rect.bottom()),
+            Vec2::new(cell_width, rect.height()),
         );
-        let local_seconds = ((cell_rect.center().x - rect.left()) / pixels_per_second) as f64;
+        let local_seconds =
+            ((cell_rect.center().x.min(rect.right()) - rect.left()) / pixels_per_second) as f64;
         let source_time = (clip.source_in + local_seconds).clamp(0.0, asset_duration);
-        let normalized = source_time / asset_duration.max(0.001);
-        let index = (normalized * (frames.len().saturating_sub(1)) as f64).round() as usize;
-        let texture = &frames[index.min(frames.len() - 1)];
-        let image_size = fit_size(texture.size_vec2(), cell_rect.size());
+        let index = ((source_time / asset_duration.max(0.001) * frames.len() as f64).floor()
+            as usize)
+            .min(frames.len() - 1);
+        let texture = frames[index].as_ref().unwrap_or_else(|| {
+            frames
+                .iter()
+                .enumerate()
+                .filter_map(|(i, frame)| frame.as_ref().map(|frame| (i.abs_diff(index), frame)))
+                .min_by_key(|(distance, _)| *distance)
+                .unwrap()
+                .1
+        });
         painter.image(
             texture.id(),
-            Rect::from_center_size(cell_rect.center(), image_size),
+            cell_rect,
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::from_white_alpha(225),
         );
         painter.line_segment(
             [cell_rect.right_top(), cell_rect.right_bottom()],
-            Stroke::new(1.0, Color32::from_black_alpha(120)),
+            Stroke::new(1.0_f32, Color32::from_black_alpha(120)),
         );
     }
 }
 
-fn paint_waveform(
-    painter: &egui::Painter,
-    rect: Rect,
-    peaks: &[f32],
-    clip: &Clip,
-    asset_duration: f64,
-) {
-    if peaks.is_empty() || rect.width() <= 1.0 {
+fn paint_waveform(painter: &egui::Painter, rect: Rect, waveform: &Waveform, clip: &Clip) {
+    let visible = rect.intersect(painter.clip_rect());
+    if waveform.peaks.is_empty() || !visible.is_positive() {
         return;
     }
+    let painter = painter.with_clip_rect(visible);
     let center = rect.center().y;
     painter.line_segment(
-        [rect.left_center(), rect.right_center()],
-        Stroke::new(1.0, Color32::from_rgb(52, 75, 87)),
+        [visible.left_center(), visible.right_center()],
+        Stroke::new(1.0_f32, Color32::from_rgb(52, 75, 87)),
     );
-    let columns = (rect.width() / 2.0).ceil().max(1.0) as usize;
+    let first = ((visible.left() - rect.left()) / 2.0).floor() as usize;
+    let last = ((visible.right() - rect.left()) / 2.0).ceil() as usize;
     let color = if clip.muted {
         Color32::from_rgb(75, 101, 109)
     } else {
         Color32::from_rgb(77, 211, 224)
     };
-    for column in 0..columns {
-        let fraction = if columns <= 1 {
-            0.0
-        } else {
-            column as f64 / (columns - 1) as f64
-        };
+    for column in first..last {
+        let fraction = (column as f64 * 2.0 / rect.width() as f64).clamp(0.0, 1.0);
         let source_time = clip.source_in + clip.duration() * fraction;
-        let sample = ((source_time / asset_duration.max(0.001))
-            * peaks.len().saturating_sub(1) as f64)
-            .round() as usize;
-        let amplitude = peaks[sample.min(peaks.len() - 1)] * rect.height() * 0.44;
+        // Index by source seconds, so a growing waveform never stretches across
+        // the unfinished portion of the clip.
+        let sample = (source_time * PEAKS_PER_SECOND as f64).floor() as usize;
+        let Some(peak) = waveform.peaks.get(sample) else {
+            continue;
+        };
+        let amplitude = (peak / waveform.maximum.max(0.000_01)).sqrt() * rect.height() * 0.44;
         let x = rect.left() + column as f32 * 2.0;
         painter.line_segment(
             [
                 Pos2::new(x, center - amplitude),
                 Pos2::new(x, center + amplitude),
             ],
-            Stroke::new(1.35, color),
+            Stroke::new(1.35_f32, color),
         );
     }
 }
@@ -2258,6 +2276,89 @@ fn safe_name(name: &str) -> String {
 #[cfg(test)]
 mod timeline_tests {
     use super::*;
+
+    #[test]
+    fn portrait_filmstrip_uses_narrow_cells_and_only_draws_the_viewport() {
+        let ctx = egui::Context::default();
+        let texture = ctx.load_texture(
+            "portrait",
+            ColorImage::filled([90, 160], Color32::WHITE),
+            TextureOptions::LINEAR,
+        );
+        let frames = vec![Some(texture)];
+        let clip = Clip {
+            id: Uuid::new_v4(),
+            asset_id: Uuid::new_v4(),
+            source_in: 0.0,
+            source_out: 3600.0,
+            audio_gain: 1.0,
+            muted: false,
+        };
+        let visible = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 70.0));
+        let mut meshes = Vec::new();
+        ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx
+                .layer_painter(egui::LayerId::background())
+                .with_clip_rect(visible);
+            paint_filmstrip(
+                &painter,
+                Rect::from_min_size(Pos2::new(-20_000.0, 0.0), Vec2::new(129_600.0, 70.0)),
+                &frames,
+                &clip,
+                3600.0,
+                36.0,
+            );
+        })
+        .shapes
+        .into_iter()
+        .for_each(|shape| {
+            if let egui::Shape::Mesh(mesh) = shape.shape {
+                meshes.push(mesh);
+            }
+        });
+        assert!((20..=22).contains(&meshes.len()), "{} cells", meshes.len());
+        for mesh in meshes {
+            let bounds = mesh.calc_bounds();
+            assert!((bounds.width() / bounds.height() - 90.0 / 160.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn partial_waveform_stays_at_its_source_time() {
+        let ctx = egui::Context::default();
+        let mut waveform = Waveform::default();
+        waveform.extend(vec![0.5; PEAKS_PER_SECOND]); // Only the first second is decoded.
+        let clip = Clip {
+            id: Uuid::new_v4(),
+            asset_id: Uuid::new_v4(),
+            source_in: 0.0,
+            source_out: 10.0,
+            audio_gain: 1.0,
+            muted: false,
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 40.0));
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            paint_waveform(
+                &ctx.layer_painter(egui::LayerId::background())
+                    .with_clip_rect(rect),
+                rect,
+                &waveform,
+                &clip,
+            );
+        });
+        let bars = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match shape.shape {
+                egui::Shape::LineSegment { points, .. } if points[0].x == points[1].x => {
+                    Some(points)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bars.len(), 50);
+        assert!(bars.iter().all(|points| points[0].x < 100.0));
+    }
 
     fn frame(
         ctx: &egui::Context,
