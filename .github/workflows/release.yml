@@ -23,8 +23,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate final release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify final tag belongs to main
+        run: python3 packaging/verify_release_ref.py "$RELEASE_TAG"
+
   build:
     name: Build ${{ matrix.label }}
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
