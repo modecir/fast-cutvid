@@ -6,7 +6,7 @@ on:
       tag:
         description: Existing version tag to build and publish
         required: true
-        default: v0.1.2
+        default: v0.1.3
         type: string
   push:
     tags:
@@ -145,6 +145,7 @@ jobs:
           archive="$folder.tar.gz"
           mkdir -p "dist/$folder"
           cp "target/${TARGET}/release/fast-cutvid" "dist/$folder/"
+          cp packaging/linux/register-file-type.py "dist/$folder/"
           cp README.md CHANGELOG.md LICENSE AGENTS.md CLAUDE.md "dist/$folder/"
           cp -R docs .agents assets "dist/$folder/"
           tar -czf "dist/$archive" -C dist "$folder"
@@ -163,6 +164,7 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item "target/$env:TARGET/release/fast-cutvid.exe" $stage
           Copy-Item packaging/windows/fastCutVid.ico $stage
+          Copy-Item packaging/windows/register-file-type.ps1 $stage
           Copy-Item README.md, CHANGELOG.md, LICENSE, AGENTS.md, CLAUDE.md $stage
           Copy-Item -Path docs, .agents, assets -Destination $stage -Recurse
           Add-Type -AssemblyName System.IO.Compression.FileSystem

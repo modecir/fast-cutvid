@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3) — 2026-09-07
+
+- Use `.fastcut` for new project saves and cut exports, with legacy JSON projects still supported.
+- Register macOS project documents and handle Finder opens at launch and while running.
+- Include per-user file association scripts in Windows and Linux releases.
+
 ## [0.1.2](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.2) — 2026-09-05
 
 - Fix a crash when clicking or dragging the timeline with accessibility active; preserve timeline pinch zoom without assigning focus to a nonexistent widget.

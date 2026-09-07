@@ -1,6 +1,7 @@
 """Validate the four release archives, bundled instructions, and SHA-256 files."""
 
 import hashlib
+import plistlib
 from pathlib import Path
 import sys
 import tarfile
@@ -24,6 +25,10 @@ def verify(directory: Path, tag: str) -> None:
         else:
             with tarfile.open(archive) as bundle:
                 names = set(bundle.getnames())
+                if platform.startswith("macos"):
+                    info = plistlib.loads(bundle.extractfile("fastCutVid.app/Contents/Info.plist").read())
+                    assert info["CFBundleDocumentTypes"][0]["LSItemContentTypes"] == ["com.modecir.fastcut.project"]
+                    assert info["UTExportedTypeDeclarations"][0]["UTTypeTagSpecification"]["public.filename-extension"] == ["fastcut"]
         if platform.startswith("macos"):
             root = "fastCutVid.app/Contents/Resources/"
             assert "fastCutVid.app/Contents/MacOS/fast-cutvid" in names
@@ -33,6 +38,8 @@ def verify(directory: Path, tag: str) -> None:
             root = "" if suffix == ".zip" else f"fastcutvid-{tag}-{platform}/"
             executable = "fast-cutvid.exe" if suffix == ".zip" else "fast-cutvid"
             assert root + executable in names
+            registration = "register-file-type.ps1" if suffix == ".zip" else "register-file-type.py"
+            assert root + registration in names
         for required in (
             "README.md", "CHANGELOG.md", "LICENSE", "AGENTS.md", "CLAUDE.md",
             f"docs/releases/{tag}.md",

@@ -1,6 +1,6 @@
 ---
 name: fast-cut-timelines
-description: Construct, modify, validate, or render fastCutVid video timeline JSON. Use when an agent prepares cuts from source media, edits a .fastcut.json project, or needs to understand fastCutVid's timeline semantics; not for effects or full finishing workflows.
+description: Construct, modify, validate, or render fastCutVid video timeline JSON. Use when an agent prepares cuts from source media, edits a .fastcut project, or needs to understand fastCutVid's timeline semantics; not for effects or full finishing workflows.
 ---
 
 # fastCutVid Timelines
@@ -23,13 +23,13 @@ fastCutVid is the assembly and cutting stage of a video workflow. Its v1 project
 5. Validate the result before reporting completion:
 
    ```bash
-   fast-cutvid --validate path/to/edit.fastcut.json
+   fast-cutvid --validate path/to/edit.fastcut
    ```
 
 6. Render only when the user requests media output:
 
    ```bash
-   fast-cutvid --render path/to/edit.fastcut.json --output path/to/final.mp4
+   fast-cutvid --render path/to/edit.fastcut --output path/to/final.mp4
    ```
 
 Use source timecodes in seconds. Keep every clip range inside its referenced asset duration. JSON paths may be absolute or relative to the JSON file; prefer relative paths when the project and media will move together.

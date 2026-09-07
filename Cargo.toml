@@ -1,6 +1,6 @@
 [package]
 name = "fast-cutvid"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "A fast, native, open-source non-linear video cutter"
 license = "MIT"
@@ -23,7 +23,7 @@ objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSEvent", "NS
 objc2-av-foundation = { version = "0.3.2", features = ["AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "objc2-core-media", "objc2-core-video"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }
 objc2-core-video = { version = "0.3.2", features = ["CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-objc2-foundation = { version = "0.3.2", features = ["NSDictionary", "NSObject", "NSString", "NSURL", "NSValue", "std"] }
+objc2-foundation = { version = "0.3.2", features = ["objc2-core-services", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSDictionary", "NSObject", "NSString", "NSURL", "NSValue", "std"] }
 
 [profile.release]
 lto = "thin"

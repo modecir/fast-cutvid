@@ -1,10 +1,10 @@
 # Use fastCutVid with local agents
 
-fastCutVid 0.1.2 gives agents a file format and a command-line renderer. There is no built-in model, API key requirement, chat service, or MCP server. Your chosen agent reads source metadata, writes a `.fastcut.json` timeline, validates it, and optionally renders it. You can review the same timeline in the desktop app.
+fastCutVid 0.1.3 gives agents a file format and a command-line renderer. There is no built-in model, API key requirement, chat service, or MCP server. Your chosen agent reads source metadata, writes a `.fastcut` timeline, validates it, and optionally renders it. You can review the same timeline in the desktop app.
 
 ## Prepare your workspace
 
-1. Download and extract the correct build from [v0.1.2](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.2), and install FFmpeg and FFprobe. Follow the [operator guide](OPERATOR_GUIDE.md).
+1. Download and extract the correct build from [v0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3), and install FFmpeg and FFprobe. Follow the [operator guide](OPERATOR_GUIDE.md).
 2. Create a working folder containing your videos, any transcript with source timestamps, and the intended output folder. Give the agent access to that folder.
 3. Keep the bundled `docs`, `.agents`, `AGENTS.md`, and `CLAUDE.md` together. They are at the extracted package root on Windows/Linux; on macOS, they are inside `fastCutVid.app/Contents/Resources` (Finder → Show Package Contents). You can copy those four entries together into your working folder; do not copy just `SKILL.md`, because its references are relative.
 4. Tell the agent the absolute path to the executable and the working folder. Confirm the executable runs with `--version` and that `ffprobe -version` works in the agent's execution environment.
@@ -14,7 +14,7 @@ You can instead clone the source repository and open it as the agent's project:
 ```bash
 git clone https://github.com/modecir/fast-cutvid.git
 cd fast-cutvid
-git checkout v0.1.2
+git checkout v0.1.3
 cargo build --release --locked
 ```
 
@@ -26,22 +26,22 @@ Use the path where you actually extracted or installed the release. For example,
 
 ```bash
 /Applications/fastCutVid.app/Contents/MacOS/fast-cutvid --version
-/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid --validate ./edit.fastcut.json
-/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid --render ./edit.fastcut.json --output ./final.mp4
+/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid --validate ./edit.fastcut
+/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid --render ./edit.fastcut --output ./final.mp4
 ```
 
 Linux, from the extracted package directory:
 
 ```bash
-./fast-cutvid --validate ./edit.fastcut.json
-./fast-cutvid --render ./edit.fastcut.json --output ./final.mp4
+./fast-cutvid --validate ./edit.fastcut
+./fast-cutvid --render ./edit.fastcut --output ./final.mp4
 ```
 
 Windows PowerShell, from the extracted package directory:
 
 ```powershell
-.\fast-cutvid.exe --validate .\edit.fastcut.json
-.\fast-cutvid.exe --render .\edit.fastcut.json --output .\final.mp4
+.\fast-cutvid.exe --validate .\edit.fastcut
+.\fast-cutvid.exe --render .\edit.fastcut --output .\final.mp4
 ```
 
 For a quoted executable path in PowerShell use the call operator: `& "C:\Tools\fastCutVid\fast-cutvid.exe" --version`. Relative media paths resolve from the JSON file, not from the executable. Rendering writes to the specified output and can overwrite it; choose a new filename and never a source video.
@@ -55,7 +55,7 @@ Start with this prompt, replacing the example paths with your own:
 ```text
 Use $fast-cut-timelines. Read docs/AGENT_GUIDE.md and the timeline format reference.
 My source is media/interview.mp4. Use the installed fast-cutvid executable at
-<absolute executable path>. Probe the file, then make edit.fastcut.json containing
+<absolute executable path>. Probe the file, then make edit.fastcut containing
 source seconds 4–12 followed by 30–45. Keep the original audio. Validate the file
 with fast-cutvid --validate and report the total duration. Do not render yet.
 ```
@@ -63,7 +63,7 @@ with fast-cutvid --validate and report the total duration. Do not render yet.
 To request the final media after reviewing the JSON in fastCutVid:
 
 ```text
-Render edit.fastcut.json to outputs/interview-cut.mp4 with fast-cutvid --render.
+Render edit.fastcut to outputs/interview-cut.mp4 with fast-cutvid --render.
 Use a new output path. Verify the resulting video duration and audio stream with
 ffprobe, then return the video path and the timeline path.
 ```
@@ -77,7 +77,7 @@ Start Claude Code in the source checkout or prepared folder. The included `CLAUD
 ```text
 Read .agents/skills/fast-cut-timelines/SKILL.md, its timeline reference, and
 docs/AGENT_GUIDE.md. Use <absolute executable path> for fastCutVid commands.
-Build edit.fastcut.json from media/interview.mp4, keeping source seconds 4–12
+Build edit.fastcut from media/interview.mp4, keeping source seconds 4–12
 and 30–45 in that order. Probe the source first and validate the result.
 Return the JSON for review; do not render yet.
 ```

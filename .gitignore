@@ -4,5 +4,6 @@
 .env.*
 CLAUDE.local.md
 .claude/settings.local.json
+*.fastcut
 *.fastcut.json
 .DS_Store

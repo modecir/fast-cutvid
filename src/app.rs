@@ -73,7 +73,10 @@ pub struct FastCutApp {
 impl FastCutApp {
     pub fn new(cc: &eframe::CreationContext<'_>, opening_paths: Vec<PathBuf>) -> Self {
         #[cfg(target_os = "macos")]
-        crate::menu_macos::install(&cc.egui_ctx);
+        {
+            crate::menu_macos::install(&cc.egui_ctx);
+            crate::documents_macos::set_context(&cc.egui_ctx);
+        }
         configure_style(&cc.egui_ctx);
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let (import_tx, import_rx) = channel();
@@ -104,7 +107,7 @@ impl FastCutApp {
         };
         // Open the project first regardless of argument order, so its channel
         // reset cannot discard imports requested by the same launch.
-        if let Some(path) = opening_paths.iter().find(|path| is_json_path(path))
+        if let Some(path) = opening_paths.iter().find(|path| is_project_path(path))
             && !app.open_project_path(path.clone())
         {
             return app;
@@ -284,8 +287,8 @@ impl FastCutApp {
         }
         .or_else(|| {
             rfd::FileDialog::new()
-                .set_file_name(format!("{}.fastcut.json", safe_name(&self.project.name)))
-                .add_filter("fastCutVid project", &["json"])
+                .set_file_name(format!("{}.fastcut", safe_name(&self.project.name)))
+                .add_filter("fastCutVid project", &["fastcut"])
                 .save_file()
         });
         let Some(path) = path else { return };
@@ -318,7 +321,7 @@ impl FastCutApp {
                     .unwrap_or_default()
                     .to_string_lossy(),
             )
-            .add_filter("fastCutVid cuts", &["json"]);
+            .add_filter("fastCutVid cuts", &["fastcut"]);
         if let Some(directory) = default_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -338,7 +341,7 @@ impl FastCutApp {
 
     fn open_project(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("fastCutVid project", &["json"])
+            .add_filter("fastCutVid project", &["fastcut", "json"])
             .pick_file()
         else {
             return;
@@ -426,7 +429,7 @@ impl FastCutApp {
                 unsupported += 1;
                 continue;
             };
-            if is_json_path(&path) {
+            if is_project_path(&path) {
                 timelines.push(path);
             } else if is_video_path(&path) {
                 videos.push(path);
@@ -470,7 +473,7 @@ impl FastCutApp {
         painter.text(
             rect.center() + Vec2::new(0.0, 18.0),
             Align2::CENTER_CENTER,
-            "Videos are added to Media  •  Timeline JSON opens as a project",
+            "Videos are added to Media  •  .fastcut files open as projects",
             FontId::proportional(13.0),
             TEXT_MUTED,
         );
@@ -958,7 +961,7 @@ impl FastCutApp {
                         ui.label(RichText::new("Drop in footage or a timeline").size(16.0));
                         ui.add_space(6.0);
                         ui.label(
-                            RichText::new("Video files add to Media • JSON opens a project")
+                            RichText::new("Video files add to Media • .fastcut opens a project")
                                 .color(TEXT_MUTED)
                                 .size(12.0),
                         );
@@ -1683,11 +1686,11 @@ impl FastCutApp {
                 );
                 ui.add_space(14.0);
 
-                help_step(ui, "1", "Import", "Drop video files anywhere, or use + Import. Drop a fastCutVid JSON file to open a complete saved timeline.");
+                help_step(ui, "1", "Import", "Drop video files anywhere, or use + Import. Drop a .fastcut project file to open a complete saved timeline.");
                 help_step(ui, "2", "Assemble", "Double-click media or choose + Timeline. Clips play consecutively from left to right.");
                 help_step(ui, "3", "Find cuts", "Click-drag over a clip to scrub. Use Left/Right for one second and Shift+Left/Right for one frame.");
                 help_step(ui, "4", "Edit", "Drag clip edges to trim, press S to split, Delete to remove, and Option/Alt+Arrow to reorder.");
-                help_step(ui, "5", "Deliver", "Save keeps an editable JSON project. Export cuts hands JSON to an agent; Export video renders an MP4.");
+                help_step(ui, "5", "Deliver", "Save keeps an editable .fastcut project. Export cuts creates a project copy for an agent; Export video renders an MP4.");
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -1713,6 +1716,18 @@ impl eframe::App for FastCutApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         self.handle_macos_menu(ctx);
+        #[cfg(target_os = "macos")]
+        for paths in crate::documents_macos::take_open_requests() {
+            match crate::opening_paths(paths) {
+                Ok(paths) => {
+                    if let Some(path) = paths.into_iter().find(|path| is_project_path(path)) {
+                        self.open_project_path(path);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+                Err(error) => self.status = format!("Open failed: {error}"),
+            }
+        }
         self.handle_file_drop(ctx);
         self.update_background_work(ctx);
         self.update_playback(ctx);
@@ -2154,10 +2169,12 @@ pub(crate) fn is_video_path(path: &std::path::Path) -> bool {
         })
 }
 
-pub(crate) fn is_json_path(path: &std::path::Path) -> bool {
+pub(crate) fn is_project_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("fastcut") || extension.eq_ignore_ascii_case("json")
+        })
 }
 
 fn short_time(seconds: f64) -> String {
@@ -2189,12 +2206,15 @@ fn timeline_zoom(ui: &egui::Ui, active: &mut bool, pixels_per_second: &mut f32) 
 
 fn cuts_export_path(project: Option<&Path>, media: Option<&Path>, name: &str) -> PathBuf {
     let Some(source) = project.or(media) else {
-        return PathBuf::from(format!("{}-cutted.fastcut.json", safe_name(name)));
+        return PathBuf::from(format!("{}-cutted.fastcut", safe_name(name)));
     };
     let stem = source.file_stem().unwrap_or_default();
     // Treat .fastcut.json as one project suffix, but keep other dots and the
     // original spelling (including spaces and Unicode) in the suggested name.
     let stem = if project.is_some()
+        && source
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         && Path::new(stem)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("fastcut"))
@@ -2203,7 +2223,7 @@ fn cuts_export_path(project: Option<&Path>, media: Option<&Path>, name: &str) ->
     } else {
         stem
     };
-    let filename = format!("{}-cutted.fastcut.json", stem.to_string_lossy());
+    let filename = format!("{}-cutted.fastcut", stem.to_string_lossy());
     source
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -2409,16 +2429,21 @@ mod export_tests {
                 Some(Path::new("media/source.mov")),
                 "Untitled"
             ),
-            PathBuf::from("projects/Interview-cutted.fastcut.json")
+            PathBuf::from("projects/Interview-cutted.fastcut")
         );
     }
 
     #[test]
     fn cuts_handle_plain_json_and_case_insensitive_compound_suffix() {
-        for source in ["projects/Edit.json", "projects/Edit.FASTCUT.JSON"] {
+        for source in [
+            "projects/Edit.json",
+            "projects/Edit.FASTCUT.JSON",
+            "projects/Edit.fastcut",
+            "projects/Edit.FASTCUT",
+        ] {
             assert_eq!(
                 cuts_export_path(Some(Path::new(source)), None, "Untitled"),
-                PathBuf::from("projects/Edit-cutted.fastcut.json")
+                PathBuf::from("projects/Edit-cutted.fastcut")
             );
         }
     }
@@ -2431,7 +2456,7 @@ mod export_tests {
                 Some(Path::new("media/My café.take.2.MOV")),
                 "Untitled"
             ),
-            PathBuf::from("media/My café.take.2-cutted.fastcut.json")
+            PathBuf::from("media/My café.take.2-cutted.fastcut")
         );
     }
 
@@ -2440,11 +2465,11 @@ mod export_tests {
         let source = std::env::temp_dir().join("clip.mp4");
         assert_eq!(
             cuts_export_path(None, Some(&source), "Untitled"),
-            std::env::temp_dir().join("clip-cutted.fastcut.json")
+            std::env::temp_dir().join("clip-cutted.fastcut")
         );
         assert_eq!(
             cuts_export_path(None, Some(Path::new("clip.mp4")), "Untitled"),
-            PathBuf::from("./clip-cutted.fastcut.json")
+            PathBuf::from("./clip-cutted.fastcut")
         );
     }
 
@@ -2452,7 +2477,7 @@ mod export_tests {
     fn empty_project_uses_its_name() {
         assert_eq!(
             cuts_export_path(None, None, "My edit"),
-            PathBuf::from("my-edit-cutted.fastcut.json")
+            PathBuf::from("my-edit-cutted.fastcut")
         );
     }
 }

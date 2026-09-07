@@ -1,4 +1,6 @@
 mod app;
+#[cfg(target_os = "macos")]
+mod documents_macos;
 mod media;
 #[cfg(target_os = "macos")]
 mod menu_macos;
@@ -21,16 +23,16 @@ use clap::Parser;
     about = "fastCutVid — native video cutting for humans and agents"
 )]
 struct Args {
-    /// Open one timeline JSON and/or import videos into the GUI media bin.
+    /// Open one fastCutVid project and/or import videos into the GUI media bin.
     #[arg(value_name = "FILE", conflicts_with_all = ["validate", "render", "output"])]
     files: Vec<PathBuf>,
 
     /// Validate a fastCutVid timeline without opening the GUI or rendering.
-    #[arg(long, value_name = "PROJECT.fastcut.json", conflicts_with = "render")]
+    #[arg(long, value_name = "PROJECT.fastcut", conflicts_with = "render")]
     validate: Option<PathBuf>,
 
     /// Render a fastCutVid project without opening the GUI.
-    #[arg(long, value_name = "PROJECT.fastcut.json")]
+    #[arg(long, value_name = "PROJECT.fastcut")]
     render: Option<PathBuf>,
 
     /// Output video used with --render.
@@ -64,6 +66,8 @@ fn main() -> Result<()> {
     }
 
     let files = opening_paths(args.files)?;
+    #[cfg(target_os = "macos")]
+    documents_macos::install();
 
     let viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1440.0, 900.0])
@@ -103,7 +107,7 @@ fn opening_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
                 "File does not exist or is not a regular file: {}",
                 path.display()
             );
-            if app::is_json_path(&path) {
+            if app::is_project_path(&path) {
                 projects += 1;
                 anyhow::ensure!(
                     projects <= 1,
@@ -112,7 +116,7 @@ fn opening_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
             } else {
                 anyhow::ensure!(
                     app::is_video_path(&path),
-                    "Unsupported file type: {} (expected timeline JSON or video)",
+                    "Unsupported file type: {} (expected a .fastcut project or video)",
                     path.display()
                 );
             }
@@ -207,7 +211,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         // Empty files are sufficient here: this checks launch routing, not decoding.
         let video = directory.path().join("a clip.MOV");
-        let project = directory.path().join("edit.fastcut.JSON");
+        let project = directory.path().join("edit.FASTCUT");
         let other_project = directory.path().join("other.json");
         let unsupported = directory.path().join("notes.txt");
         for path in [&video, &project, &other_project, &unsupported] {
@@ -232,6 +236,21 @@ mod tests {
         assert!(opening_paths(vec![directory.path().join("missing.mp4")]).is_err());
         assert!(opening_paths(vec![directory.path().to_owned()]).is_err());
         assert!(opening_paths(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn routes_new_and_legacy_project_extensions() {
+        for name in [
+            "edit.fastcut",
+            "café.FASTCUT",
+            "edit.fastcut.json",
+            "edit.JSON",
+        ] {
+            assert!(app::is_project_path(std::path::Path::new(name)));
+        }
+        for name in ["clip.mp4", "edit.fastcut.bak", "fastcut", "notes.txt"] {
+            assert!(!app::is_project_path(std::path::Path::new(name)));
+        }
     }
 
     #[test]

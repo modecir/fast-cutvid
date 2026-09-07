@@ -251,6 +251,19 @@ mod tests {
     }
 
     #[test]
+    fn project_round_trips_with_new_and_legacy_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["edit.fastcut", "edit.fastcut.json", "edit.json"] {
+            let path = temp.path().join(name);
+            let project = Project::default();
+            project.save(&path).unwrap();
+            let loaded = Project::load(&path).unwrap();
+            assert_eq!(loaded.name, project.name);
+            assert_eq!(loaded.format, FORMAT_VERSION);
+        }
+    }
+
+    #[test]
     fn resolves_paths_relative_to_timeline_json() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let path = temp.path().join("edit.fastcut.json");

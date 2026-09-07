@@ -41,13 +41,13 @@ The array order of `clips` is the timeline order. There are no explicit timeline
 From a source checkout:
 
 ```bash
-cargo run --release -- --validate path/to/edit.fastcut.json
+cargo run --release -- --validate path/to/edit.fastcut
 ```
 
 With a downloaded executable:
 
 ```bash
-fast-cutvid --validate path/to/edit.fastcut.json
+fast-cutvid --validate path/to/edit.fastcut
 ```
 
 Do not report the project as ready unless validation succeeds. Validation checks the format, unique IDs, references, source bounds, dimensions, frame rates, rotations, audio values, and render settings. It does not prove that media files exist or that the creative cut is correct, so verify source paths separately.
@@ -56,7 +56,7 @@ Do not report the project as ready unless validation succeeds. Validation checks
 
 ```bash
 fast-cutvid \
-  --render path/to/edit.fastcut.json \
+  --render path/to/edit.fastcut \
   --output path/to/final.mp4
 ```
 
@@ -66,11 +66,11 @@ If rendering fails, return the actionable FFmpeg or validation error. Do not rep
 
 ## Interoperate with the GUI
 
-- Since 0.1.1, launch `fast-cutvid "edit.fastcut.json"` to open a project, or `fast-cutvid "clip one.mp4" "clip two.mov"` to import media. A project plus videos opens the project first, then imports the videos into its media bin. Only one project is accepted per launch. Use the installed executable path or `cargo run --release --` as needed. These positional arguments cannot be mixed with headless flags.
+- Launch `fast-cutvid "edit.fastcut"` to open a project, or `fast-cutvid "clip one.mp4" "clip two.mov"` to import media. A project plus videos opens the project first, then imports the videos into its media bin. Only one project is accepted per launch. Use the installed executable path or `cargo run --release --` as needed. These positional arguments cannot be mixed with headless flags.
 - Dropping videos imports them into Media but does not automatically append them to the sequence.
 - Dropping timeline JSON opens it as the current project and rebuilds previews in the background.
 - **Export cuts** writes the same JSON structure used by the headless commands.
-- Since 0.1.2, **Export cuts** saves a copy without changing the active project path or clearing unsaved edits. Its dialog suggests the project folder and basename plus `-cutted.fastcut.json`; unsaved projects use the first timeline source (or first media asset). Confirm the actual chosen output path when handing off exported cuts.
+- **Export cuts** saves a copy without changing the active project path or clearing unsaved edits. Its dialog suggests the project folder and basename plus `-cutted.fastcut`; unsaved projects use the first timeline source (or first media asset). Confirm the actual chosen output path when handing off exported cuts.
 - **Export video** invokes the same renderer as `--render`.
 
 When handing work to an operator, report the timeline path, source count, clip count, total duration, validation result, and rendered output path if one was requested. Call out missing or externally located media explicitly.

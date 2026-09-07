@@ -25,7 +25,7 @@ Published builds are available from [GitHub Releases](https://github.com/modecir
 
 FFmpeg and FFprobe must currently be installed separately and available on `PATH`; they are used for media analysis and final export. Early macOS builds are ad-hoc signed but not Apple-notarized, and Windows/Linux packages are not yet installer-signed.
 
-**0.1.2 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.2.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
+**0.1.3 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.3.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
 
 ## Current MVP
 
@@ -67,18 +67,28 @@ If FFmpeg is not on `PATH`, point fastCutVid to the binaries:
 FASTCUT_FFMPEG=/path/to/ffmpeg FASTCUT_FFPROBE=/path/to/ffprobe cargo run --release
 ```
 
+## Project files
+
+Projects now use the **`.fastcut`** extension. Save As and Export cuts default to it; the contents remain `fastcut.timeline/v1` JSON. Existing `.fastcut.json` and `.json` projects still open. Use Save As to create a `.fastcut` copy, or rename an existing project without moving it away from its media. Saving an existing file keeps its original path.
+
+- **macOS:** Place the rebuilt `fastCutVid.app` in Applications and launch it once. Double-click a `.fastcut` file in Finder to open it, including while the app is running.
+- **Windows:** From the extracted release folder, run `powershell -ExecutionPolicy Bypass -File .\register-file-type.ps1`. This registers the extension for your user. If Windows asks, choose fastCutVid in **Open with**.
+- **Linux:** From the extracted release folder, run `python3 register-file-type.py`. This requires the desktop utilities `update-mime-database`, `update-desktop-database`, and `xdg-mime`.
+
+Keep Windows and Linux release folders in a permanent location; rerun registration after moving them. Only `.fastcut` is registered with the operating system; ordinary JSON files keep their existing associations.
+
 ## Open files at launch
 
 Pass a project or one or more videos as positional arguments (available since 0.1.1):
 
 ```bash
-fast-cutvid "edit.fastcut.json"
+fast-cutvid "edit.fastcut"
 fast-cutvid "first clip.mp4" "second.mov"
-fast-cutvid "edit.fastcut.json" "extra footage.mp4"
+fast-cutvid "edit.fastcut" "extra footage.mp4"
 # From a source checkout:
-cargo run --release -- "edit.fastcut.json"
+cargo run --release -- "edit.fastcut"
 # Installed macOS app:
-/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid "/absolute/path/edit.fastcut.json"
+/Applications/fastCutVid.app/Contents/MacOS/fast-cutvid "/absolute/path/edit.fastcut"
 ```
 
 One JSON project can be opened per launch. When combined with videos, the project opens first and videos import into its media bin in the background; they are not automatically appended to the timeline. Relative arguments resolve from the terminal's working directory, while media references inside JSON resolve from the project directory. Quote paths containing spaces; use `--` before filenames beginning with `-`. These GUI arguments cannot be combined with `--validate` or `--render`. On Windows, use `fast-cutvid.exe` instead.
@@ -87,13 +97,13 @@ One JSON project can be opened per launch. When combined with videos, the projec
 
 The GUI's **Export cuts** action creates an edit decision document that references your source media.
 
-Since 0.1.2, Export cuts suggests the original project's folder and basename with `-cutted.fastcut.json`. For an unsaved project it uses the first timeline clip's source video, or the first media asset if the timeline is empty. Exporting writes a copy without changing the current project path or clearing unsaved edits.
+Export cuts suggests the original project's folder and basename with `-cutted.fastcut`. For an unsaved project it uses the first timeline clip's source video, or the first media asset if the timeline is empty. Exporting writes a copy without changing the current project path or clearing unsaved edits.
 
 An agent can inspect or modify that JSON and invoke the exact same renderer without opening the interface:
 
 ```bash
 cargo run --release -- \
-  --render documentary.fastcut.json \
+  --render documentary.fastcut \
   --output documentary-final.mp4
 ```
 
@@ -102,7 +112,7 @@ The stable v1 contract lives in [`docs/timeline.schema.json`](docs/timeline.sche
 Agent-created timelines can contain any number of source assets and ordered clips. Media paths may be absolute or relative to the timeline JSON file. Validate a generated timeline without opening the interface or rendering:
 
 ```bash
-cargo run --release -- --validate documentary.fastcut.json
+cargo run --release -- --validate documentary.fastcut
 ```
 
 A valid JSON timeline can be opened with **Open** or dropped directly onto the app. Dropped video files are imported into the current media bin; a dropped JSON timeline opens as the current project.
@@ -160,8 +170,8 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 The release workflow builds downloadable packages for macOS Apple silicon, macOS Intel, Windows x86-64, and Linux x86-64. Each package includes its SHA-256 checksum. To publish:
 
 1. Update the version in `Cargo.toml` and `Cargo.lock`, update `CHANGELOG.md`, add `docs/releases/vX.Y.Z.md`, and commit them.
-2. Create a matching version tag, for example `git tag v0.1.2`.
-3. Push the tag with `git push origin v0.1.2`.
+2. Create a matching version tag, for example `git tag v0.1.3`.
+3. Push the tag with `git push origin v0.1.3`.
 
 The tag starts `.github/workflows/release.yml`, which verifies the version, tests with FFmpeg, builds every platform package, checks archive contents/checksums, and publishes a GitHub Release using the matching notes file. It uploads into a draft first and publishes after all eight assets are attached. No release is published if any platform build fails.
 
