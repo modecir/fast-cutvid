@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep the timeline time beneath the mouse cursor in place during trackpad pinch zoom.
 - Preserve source display aspect ratio in the preview and timeline filmstrip, including portrait, square, and rotated footage.
 - Show frames and waveform sections progressively with bounded background decoding and cancellation when switching projects.
 - Cache media analysis across sessions, invalidate changed sources, and regenerate damaged cache entries.
