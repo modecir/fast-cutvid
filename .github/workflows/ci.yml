@@ -54,13 +54,9 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
 
-      - name: Select stable Rust and quality tools
+      - name: Select project Rust toolchain
         shell: bash
-        run: |
-          rustup set profile minimal
-          rustup update stable
-          rustup default stable
-          rustup component add rustfmt clippy
+        run: rustup show active-toolchain
 
       - name: Check formatting
         run: cargo fmt --all -- --check

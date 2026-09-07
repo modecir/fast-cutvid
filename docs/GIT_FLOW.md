@@ -32,6 +32,8 @@ git push -u origin codex/feature/<name>
 
 Open the pull request against `dev`. Wait for CI, then merge with a merge commit. CI checks formatting, Clippy, and tests on Linux, macOS, and Windows. A feature merge does not publish an application release.
 
+`rust-toolchain.toml` pins the compiler and quality tools for local work, CI, and release builds. Rustup installs that toolchain automatically. Update the pinned version in a separate feature branch and pass CI before adopting new compiler or lint rules.
+
 ## Final releases
 
 Only begin this process when a release has been requested.

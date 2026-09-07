@@ -102,12 +102,10 @@ jobs:
           ffmpeg -version
           ffprobe -version
 
-      - name: Select stable Rust
+      - name: Select project Rust toolchain
         shell: bash
         run: |
-          rustup set profile minimal
-          rustup update stable
-          rustup default stable
+          rustup show active-toolchain
           rustup target add "${{ matrix.target }}"
 
       - name: Test
