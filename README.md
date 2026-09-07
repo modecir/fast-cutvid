@@ -38,7 +38,7 @@ FFmpeg and FFprobe must currently be installed separately and available on `PATH
 - Preview and timeline frames follow each source’s display aspect ratio, including portrait and square footage
 - Progressive filmstrip and waveform loading, bounded background decoding, and a persistent media cache
 - Progressive non-blocking imports with concurrent frame and audio analysis
-- Trackpad pinch-to-zoom when the timeline is hovered or focused
+- Trackpad pinch-to-zoom around the mouse cursor when the timeline is hovered or focused
 - Split, trim, delete, and clip reordering
 - Non-destructive source in/out points and per-clip audio controls
 - Project/cut export as readable `fastcut.timeline/v1` JSON

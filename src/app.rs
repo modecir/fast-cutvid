@@ -27,6 +27,7 @@ const BORDER: Color32 = Color32::from_rgb(48, 54, 67);
 const TEXT_MUTED: Color32 = Color32::from_rgb(145, 151, 165);
 const ACCENT: Color32 = Color32::from_rgb(113, 240, 182);
 const PURPLE: Color32 = Color32::from_rgb(116, 101, 245);
+const TIMELINE_LEADING_SPACE: f32 = 55.0;
 
 #[derive(Default)]
 struct Waveform {
@@ -1282,8 +1283,6 @@ impl FastCutApp {
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
-                timeline_zoom(ui, &mut self.timeline_active, &mut self.pixels_per_second);
-
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("TIMELINE")
@@ -1316,14 +1315,21 @@ impl FastCutApp {
                 });
                 ui.add_space(8.0);
 
+                let scroll_offset = timeline_zoom(
+                    ui,
+                    &mut self.timeline_active,
+                    &mut self.pixels_per_second,
+                    self.project.duration(),
+                );
                 let track_height = 132.0;
                 let total_width = (self.project.duration() as f32 * self.pixels_per_second)
-                    .max(ui.available_width() - 55.0);
+                    .max(ui.available_width() - TIMELINE_LEADING_SPACE);
                 egui::ScrollArea::horizontal()
                     .id_salt("timeline_scroll")
+                    .horizontal_scroll_offset(scroll_offset)
                     .show(ui, |ui| {
-                        ui.set_min_width(total_width + 55.0);
-                        let origin_x = ui.cursor().left() + 55.0;
+                        ui.set_min_width(total_width + TIMELINE_LEADING_SPACE);
+                        let origin_x = ui.cursor().left() + TIMELINE_LEADING_SPACE;
                         let ruler_y = ui.cursor().top();
                         let track_y = ruler_y + 30.0;
                         let end_y = track_y + track_height;
@@ -1564,7 +1570,10 @@ impl FastCutApp {
                             5.0,
                             ACCENT,
                         );
-                        ui.allocate_space(Vec2::new(total_width + 55.0, track_height + 36.0));
+                        ui.allocate_space(Vec2::new(
+                            total_width + TIMELINE_LEADING_SPACE,
+                            track_height + 36.0,
+                        ));
                     });
             });
     }
@@ -2200,13 +2209,24 @@ fn short_time(seconds: f64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-fn timeline_zoom(ui: &egui::Ui, active: &mut bool, pixels_per_second: &mut f32) {
+fn timeline_zoom(
+    ui: &egui::Ui,
+    active: &mut bool,
+    pixels_per_second: &mut f32,
+    duration: f64,
+) -> f32 {
+    let scroll_id = ui.make_persistent_id(Id::new("timeline_scroll"));
+    let offset = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+        .unwrap_or_default()
+        .offset
+        .x;
     let hovered = ui.rect_contains_pointer(ui.max_rect());
-    let (pressed, window_focused, zoom) = ui.input(|input| {
+    let (pressed, window_focused, zoom, pointer) = ui.input(|input| {
         (
             input.pointer.any_pressed(),
             input.focused,
             input.zoom_delta(),
+            input.pointer.hover_pos(),
         )
     });
     // This is pointer activity, not keyboard focus. Requesting focus for a
@@ -2218,8 +2238,28 @@ fn timeline_zoom(ui: &egui::Ui, active: &mut bool, pixels_per_second: &mut f32) 
         *active = hovered;
     }
     if window_focused && (hovered || *active) && (zoom - 1.0).abs() > f32::EPSILON {
+        let previous_scale = *pixels_per_second;
         *pixels_per_second = (*pixels_per_second * zoom).clamp(8.0, 120.0);
+        if *pixels_per_second != previous_scale {
+            let viewport = ui.available_rect_before_wrap();
+            let pointer_x = pointer.map_or(0.0, |pos| {
+                pos.x.clamp(viewport.left(), viewport.right())
+                    - viewport.left()
+                    - TIMELINE_LEADING_SPACE
+            });
+            // Keep the time beneath the pointer at the same screen position,
+            // accounting for the scrolled content and the track-label gutter.
+            let anchor = (offset + pointer_x).max(0.0);
+            let offset = offset + anchor * (*pixels_per_second / previous_scale - 1.0);
+            let max_offset = (duration as f32 * *pixels_per_second + TIMELINE_LEADING_SPACE
+                - viewport.width())
+            .max(0.0);
+            // Clamp before drawing as well as in ScrollArea, so reaching an
+            // edge or fitting the sequence does not cause a one-frame jump.
+            return offset.clamp(0.0, max_offset);
+        }
     }
+    offset
 }
 
 fn cuts_export_path(project: Option<&Path>, media: Option<&Path>, name: &str) -> PathBuf {
@@ -2366,7 +2406,8 @@ mod timeline_tests {
         scale: &mut f32,
         events: Vec<egui::Event>,
         focused: bool,
-    ) {
+    ) -> egui::scroll_area::ScrollAreaOutput<f32> {
+        let mut timeline = None;
         let output = ctx.run(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
@@ -2378,8 +2419,21 @@ mod timeline_tests {
                 egui::TopBottomPanel::bottom("timeline_test")
                     .exact_height(200.0)
                     .show(ctx, |ui| {
-                        timeline_zoom(ui, active, scale);
                         ui.label("Timeline");
+                        ui.add_space(8.0);
+                        let offset = timeline_zoom(ui, active, scale, 90.0);
+                        timeline = Some(
+                            egui::ScrollArea::horizontal()
+                                .id_salt("timeline_scroll")
+                                .horizontal_scroll_offset(offset)
+                                .show(ui, |ui| {
+                                    let width = (90.0 * *scale + TIMELINE_LEADING_SPACE)
+                                        .max(ui.available_width());
+                                    let origin_x = ui.cursor().left() + TIMELINE_LEADING_SPACE;
+                                    ui.allocate_space(Vec2::new(width, 168.0));
+                                    origin_x
+                                }),
+                        );
                     });
             },
         );
@@ -2392,6 +2446,7 @@ mod timeline_tests {
             "Focused ID must exist in the accessibility tree: {:?}",
             tree.focus
         );
+        timeline.unwrap()
     }
 
     fn pointer(pos: Pos2, pressed: bool) -> Vec<egui::Event> {
@@ -2498,6 +2553,111 @@ mod timeline_tests {
             true,
         );
         assert_eq!(scale, 36.0);
+    }
+
+    #[test]
+    fn pinch_keeps_the_time_under_the_pointer_fixed_across_frames() {
+        for initial_offset in [0.0, 450.0] {
+            for pointer_fraction in [0.1, 0.5, 0.95] {
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                let mut active = false;
+                let mut scale = 36.0;
+                let initial = frame(&ctx, &mut active, &mut scale, vec![], true);
+                let mut state = initial.state;
+                state.offset.x = initial_offset;
+                state.store(&ctx, initial.id);
+                let pointer = Pos2::new(
+                    initial.inner_rect.left() + initial.inner_rect.width() * pointer_fraction,
+                    initial.inner_rect.center().y,
+                );
+                let initial = frame(
+                    &ctx,
+                    &mut active,
+                    &mut scale,
+                    vec![egui::Event::PointerMoved(pointer)],
+                    true,
+                );
+                let time = (pointer.x - initial.inner) / scale;
+                for zoom in [1.5, 1.25, 0.8, 2.0 / 3.0] {
+                    let zoomed = frame(
+                        &ctx,
+                        &mut active,
+                        &mut scale,
+                        vec![egui::Event::Zoom(zoom)],
+                        true,
+                    );
+                    assert!(
+                        (zoomed.inner + time * scale - pointer.x).abs() < 0.001,
+                        "The time under the cursor moved at offset {initial_offset}, \
+                         pointer fraction {pointer_fraction}, zoom {zoom}"
+                    );
+                    let settled = frame(&ctx, &mut active, &mut scale, vec![], true);
+                    assert!(
+                        (settled.inner - zoomed.inner).abs() < 0.001,
+                        "zoomed origin {} offset {}, settled origin {} offset {}",
+                        zoomed.inner,
+                        zoomed.state.offset.x,
+                        settled.inner,
+                        settled.state.offset.x
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pinch_respects_zoom_limits_and_clamps_scroll_before_drawing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut active = false;
+        let mut scale = 110.0;
+        let initial = frame(&ctx, &mut active, &mut scale, vec![], true);
+        let mut state = initial.state;
+        state.offset.x = 600.0;
+        state.store(&ctx, initial.id);
+        let pointer = initial.inner_rect.center();
+        let initial = frame(
+            &ctx,
+            &mut active,
+            &mut scale,
+            vec![egui::Event::PointerMoved(pointer)],
+            true,
+        );
+        let time = (pointer.x - initial.inner) / scale;
+        for _ in 0..2 {
+            let zoomed = frame(
+                &ctx,
+                &mut active,
+                &mut scale,
+                vec![egui::Event::Zoom(2.0)],
+                true,
+            );
+            assert_eq!(scale, 120.0);
+            assert!(
+                (zoomed.inner + time * scale - pointer.x).abs() < 0.001,
+                "origin {} offset {}, time {time}, scale {scale}, pointer {pointer:?}",
+                zoomed.inner,
+                zoomed.state.offset.x
+            );
+        }
+        for _ in 0..2 {
+            let fitted = frame(
+                &ctx,
+                &mut active,
+                &mut scale,
+                vec![egui::Event::Zoom(0.01)],
+                true,
+            );
+            assert_eq!(scale, 8.0);
+            assert_eq!(fitted.state.offset.x, 0.0);
+            assert_eq!(
+                fitted.inner,
+                fitted.inner_rect.left() + TIMELINE_LEADING_SPACE
+            );
+            let settled = frame(&ctx, &mut active, &mut scale, vec![], true);
+            assert_eq!(settled.inner, fitted.inner);
+        }
     }
 
     #[test]

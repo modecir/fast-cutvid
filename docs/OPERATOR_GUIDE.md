@@ -76,7 +76,7 @@ The app also accepts files at launch: `fast-cutvid "edit.fastcut"` opens a proje
 - Press `Left` or `Right` to jump one second.
 - Press `Shift+Left` or `Shift+Right` to move one source frame.
 - Press `Up` or `Down` to move to the previous or next edit.
-- Pinch over the timeline or use its Zoom control to change scale.
+- Pinch over the timeline to zoom around the mouse cursor, keeping the time beneath it in place until a timeline edge is reached. You can also use the Zoom control to change scale.
 - Read the upper clip lane as video frames and the lower lane as audio amplitude. Quiet waveform areas usually indicate pauses, but always review playback before cutting.
 
 Press `?` for every keyboard shortcut. Press `F1` for the in-app quick start.
