@@ -10,9 +10,9 @@ This guide is for people using the desktop application to assemble and cut video
 
 If the commands are installed somewhere else, launch fastCutVid with `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` set to their executable paths.
 
-## Install version 0.1.3
+## Install version 0.1.4
 
-Download a platform archive from [release 0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
+Download a platform archive from [release 0.1.4](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.4), rather than GitHub's source-code archives. Keep the extracted support files with the application. No Rust installation is needed for downloaded builds.
 
 ### macOS 12 or newer
 
@@ -50,7 +50,7 @@ Download both the archive and its `.sha256` file into the same directory. On mac
 
 ### Platform limitations
 
-macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.3; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
+macOS uses native AVFoundation for video and audio preview. Windows/Linux preview is silent in 0.1.4; the waveform and MP4 export still include audio. There is no undo/redo or autosave yet. Save your JSON before replacing a project or closing the app. A saved project references its videos and does not bundle them.
 
 For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGENTS.md).
 

@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## [0.1.4](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.4) — 2026-09-08
 
 - Keep the timeline time beneath the mouse cursor in place during trackpad pinch zoom.
 - Preserve source display aspect ratio in the preview and timeline filmstrip, including portrait, square, and rotated footage.
 - Show frames and waveform sections progressively with bounded background decoding and cancellation when switching projects.
 - Cache media analysis across sessions, invalidate changed sources, and regenerate damaged cache entries.
 - Limit timeline drawing to the visible portion and budget background texture uploads to keep editing responsive.
+- Play macOS timeline cuts through one native composition and shared playback clock.
+- Adopt Git Flow with protected development and release branches, platform CI, and final-release tag checks.
+- Pin the Rust toolchain and support older FFmpeg versions in media regression tests.
 
 ## [0.1.3](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.3) — 2026-09-07
 

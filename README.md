@@ -25,7 +25,7 @@ Published builds are available from [GitHub Releases](https://github.com/modecir
 
 FFmpeg and FFprobe must currently be installed separately and available on `PATH`; they are used for media analysis and final export. Early macOS builds are ad-hoc signed but not Apple-notarized, and Windows/Linux packages are not yet installer-signed.
 
-**0.1.3 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.3.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
+**0.1.4 preview support:** macOS provides synchronized video/audio playback. Windows and Linux currently provide silent FFmpeg video preview; exported MP4 files include audio. See the [installation guide](docs/OPERATOR_GUIDE.md), [release notes](docs/releases/v0.1.4.md), and [changelog](CHANGELOG.md) for setup, limitations, and changes.
 
 ## Current MVP
 
