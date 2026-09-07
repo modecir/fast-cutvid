@@ -54,4 +54,4 @@ Urgent fixes use `codex/hotfix/<name>` from `main`, including the patch-version 
 
 The local Git Flow configuration uses `main`, `dev`, the branch prefixes above, and `v` for version tags. These settings are optional for contributors using ordinary Git commands; the Git Flow extension is not required.
 
-The initial migration preserves the existing `v0.1.3` release on `main`, records the pending media improvements and cursor-centered zoom in separate feature branches, and integrates them into `dev`. Release automation changes become active on `main` when the next release is merged there.
+The initial migration preserves the existing `v0.1.3` release on `main`, records the pending media improvements and cursor-centered zoom in separate feature branches, and integrates them into `dev`. The workflow and release checks are included in the v0.1.4 release.
