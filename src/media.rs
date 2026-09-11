@@ -355,6 +355,25 @@ pub fn verify_proxy(source: &Path, proxy: &Path, fps: f64) -> Result<()> {
 /// Disposable editing copy. Preserve timestamps and audio gaps, normalize
 /// display geometry, and use frequent keyframes to bound seek decode work.
 pub fn create_proxy(source: &Path, output: &Path, active: impl Fn() -> bool) -> Result<()> {
+    match create_proxy_attempt(source, output, &active, ["-fps_mode", "passthrough"]) {
+        Err(error)
+            if error.to_string().contains("Unrecognized option 'fps_mode'")
+                || error.to_string().contains("Option fps_mode not found") =>
+        {
+            // FFmpeg before 5.1 uses vsync; newer releases removed that option.
+            create_proxy_attempt(source, output, &active, ["-vsync", "0"])
+        }
+        result => result,
+    }
+}
+
+fn create_proxy_attempt(
+    source: &Path,
+    output: &Path,
+    active: &impl Fn() -> bool,
+    sync: [&str; 2],
+) -> Result<()> {
+    let log = tempfile::NamedTempFile::new()?;
     let mut child = Command::new(ffmpeg_binary())
         .args([
             "-y",
@@ -392,8 +411,6 @@ pub fn create_proxy(source: &Path, output: &Path, active: impl Fn() -> bool) -> 
             "yuv420p",
             "-threads",
             "2",
-            "-vsync",
-            "0",
             "-c:a",
             "aac",
             "-b:a",
@@ -401,9 +418,10 @@ pub fn create_proxy(source: &Path, output: &Path, active: impl Fn() -> bool) -> 
             "-movflags",
             "+faststart",
         ])
+        .args(sync)
         .arg(output)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(log.reopen()?))
         .spawn()
         .context("Could not start lightweight preview preparation")?;
     loop {
@@ -413,10 +431,11 @@ pub fn create_proxy(source: &Path, output: &Path, active: impl Fn() -> bool) -> 
             bail!("Preview preparation cancelled");
         }
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(
-                status.success(),
-                "Could not create a lightweight preview; the original remains available"
-            );
+            if !status.success() {
+                let mut detail = String::new();
+                log.reopen()?.take(16_384).read_to_string(&mut detail)?;
+                bail!("Could not create a lightweight preview: {}", detail.trim());
+            }
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
