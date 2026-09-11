@@ -7,6 +7,72 @@ mod model;
 #[path = "../src/player.rs"]
 mod player;
 
+#[cfg(target_os = "macos")]
+#[test]
+fn finder_launch_generates_thumbnails_and_waveforms() {
+    use std::process::Command;
+
+    const SOURCE_ENV: &str = "FASTCUT_TEST_FINDER_SOURCE";
+    if let Some(source) = std::env::var_os(SOURCE_ENV) {
+        let source = std::path::Path::new(&source);
+        let asset = media::probe(source).unwrap();
+        assert!(asset.has_audio);
+        let frame = media::thumbnail_image(&media::thumbnail(source, 0.0).unwrap()).unwrap();
+        assert_eq!(frame.size[0].max(frame.size[1]), 240);
+        assert!(frame.size[0].min(frame.size[1]) > 0);
+        let peaks = media::waveform(source, |_| true).unwrap();
+        assert!(peaks.iter().any(|peak| *peak > 0.01));
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source with spaces.mov");
+    assert!(
+        Command::new(media::ffmpeg_binary())
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:duration=0.2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.2",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Re-execute in a child so parallel tests never see a mutated environment.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "finder_launch_generates_thumbnails_and_waveforms",
+            "--nocapture",
+        ])
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env_remove("FASTCUT_FFMPEG")
+        .env_remove("FASTCUT_FFPROBE")
+        .env(SOURCE_ENV, &source)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Finder-style analysis failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn preview_uses_source_dimensions_without_a_landscape_canvas() {
     use std::{

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Find standard Homebrew and MacPorts FFmpeg/FFprobe installations when launched from Finder, restoring timeline thumbnails and waveforms without shell configuration.
+
 ## [0.1.4](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.4) — 2026-09-08
 
 - Keep the timeline time beneath the mouse cursor in place during trackpad pinch zoom.

@@ -2,6 +2,9 @@
 #![allow(dead_code, unused_imports)] // Source modules also contain unit tests.
 
 #[cfg(target_os = "macos")]
+#[path = "../src/media.rs"]
+mod media;
+#[cfg(target_os = "macos")]
 #[path = "../src/model.rs"]
 mod model;
 #[cfg(target_os = "macos")]
@@ -29,8 +32,7 @@ fn main() {
         ("blue", "blue", "90x160", false),
     ] {
         let path = temp.path().join(format!("{name}.mp4"));
-        let mut command =
-            Command::new(std::env::var("FASTCUT_FFMPEG").unwrap_or_else(|_| "ffmpeg".into()));
+        let mut command = Command::new(media::ffmpeg_binary());
         command.args([
             "-v",
             "error",
