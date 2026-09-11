@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, channel},
     thread,
@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     analysis::{FRAME_COUNT, ImportEvent, MediaAnalysis},
     media::{PEAKS_PER_SECOND, format_time},
-    model::{Clip, Project},
+    model::{Clip, Project, TimelineIndex},
     player::PreviewPlayer,
     render::{RenderEvent, render_project},
 };
@@ -44,6 +44,8 @@ impl Waveform {
 
 pub struct FastCutApp {
     project: Project,
+    index: TimelineIndex,
+    revision: u64,
     project_path: Option<PathBuf>,
     selected_clip: Option<Uuid>,
     selected_asset: Option<Uuid>,
@@ -54,6 +56,13 @@ pub struct FastCutApp {
     timeline_active: bool,
     filmstrips: HashMap<Uuid, Vec<Option<TextureHandle>>>,
     waveforms: HashMap<Uuid, Waveform>,
+    visible_assets: Vec<Uuid>,
+    resident_assets: Vec<Uuid>,
+    frames_pending: HashSet<Uuid>,
+    proxies: HashMap<Uuid, crate::model::MediaAsset>,
+    proxies_pending: HashSet<Uuid>,
+    proxies_changed: bool,
+    use_proxies: bool,
     preview_texture: Option<TextureHandle>,
     preview_display_size: Option<Vec2>,
     player: PreviewPlayer,
@@ -82,6 +91,8 @@ impl FastCutApp {
         let (analysis, import_rx) = MediaAnalysis::new();
         let mut app = Self {
             project: Project::default(),
+            index: TimelineIndex::default(),
+            revision: 0,
             project_path: None,
             selected_clip: None,
             selected_asset: None,
@@ -92,6 +103,13 @@ impl FastCutApp {
             timeline_active: false,
             filmstrips: HashMap::new(),
             waveforms: HashMap::new(),
+            visible_assets: Vec::new(),
+            resident_assets: Vec::new(),
+            frames_pending: HashSet::new(),
+            proxies: HashMap::new(),
+            proxies_pending: HashSet::new(),
+            proxies_changed: false,
+            use_proxies: true,
             preview_texture: None,
             preview_display_size: None,
             player: PreviewPlayer::default(),
@@ -122,6 +140,18 @@ impl FastCutApp {
             app.queue_video_imports(videos);
         }
         app
+    }
+
+    fn project_changed(&mut self) {
+        self.index = TimelineIndex::new(&self.project);
+        self.revision = self.revision.wrapping_add(1);
+        self.playhead = self.playhead.min(self.index.duration());
+        if self.project.clips.is_empty() {
+            self.playing = false;
+            self.playback_started = None;
+            self.player.stop();
+        }
+        self.dirty = true;
     }
 
     fn import_media(&mut self) {
@@ -164,13 +194,13 @@ impl FastCutApp {
     }
 
     fn add_asset_to_timeline(&mut self, asset_id: Uuid) {
-        let Some(asset) = self.project.asset(asset_id) else {
+        let Some(asset) = self.index.asset(&self.project, asset_id) else {
             return;
         };
         let clip = Clip::from_asset(asset);
         self.selected_clip = Some(clip.id);
         self.project.clips.push(clip);
-        self.dirty = true;
+        self.project_changed();
         self.status = "Clip added to timeline".to_owned();
         if self.project.clips.len() == 1 {
             self.playhead = 0.0;
@@ -179,7 +209,8 @@ impl FastCutApp {
     }
 
     fn split_at_playhead(&mut self) {
-        let Some((index, clip_start, clip)) = self.project.clip_at(self.playhead) else {
+        let Some((index, clip_start, clip)) = self.index.clip_at(&self.project, self.playhead)
+        else {
             return;
         };
         let local = self.playhead - clip_start;
@@ -194,21 +225,21 @@ impl FastCutApp {
         self.project.clips[index].source_out = split_source;
         self.project.clips.insert(index + 1, right.clone());
         self.selected_clip = Some(right.id);
-        self.dirty = true;
+        self.project_changed();
         self.status = format!("Split at {}", format_time(self.playhead));
     }
 
     fn delete_selected(&mut self) {
         let Some(id) = self.selected_clip else { return };
-        if let Some(index) = self.project.clips.iter().position(|clip| clip.id == id) {
+        if let Some(index) = self.index.clip_index(id) {
             self.project.clips.remove(index);
             self.selected_clip = self
                 .project
                 .clips
                 .get(index.saturating_sub(1))
                 .map(|clip| clip.id);
-            self.playhead = self.playhead.min(self.project.duration());
-            self.dirty = true;
+            self.project_changed();
+            self.playhead = self.playhead.min(self.index.duration());
             self.status = "Clip removed".to_owned();
             self.load_preview_at_playhead(false);
         }
@@ -216,13 +247,13 @@ impl FastCutApp {
 
     fn move_selected(&mut self, direction: isize) {
         let Some(id) = self.selected_clip else { return };
-        let Some(index) = self.project.clips.iter().position(|clip| clip.id == id) else {
+        let Some(index) = self.index.clip_index(id) else {
             return;
         };
         let target = index as isize + direction;
         if target >= 0 && target < self.project.clips.len() as isize {
             self.project.clips.swap(index, target as usize);
-            self.dirty = true;
+            self.project_changed();
         }
     }
 
@@ -232,52 +263,78 @@ impl FastCutApp {
         }
         self.playing = !self.playing;
         if self.playing {
-            if self.playhead >= self.project.duration() {
+            if self.playhead >= self.index.duration() {
                 self.playhead = 0.0;
             }
             self.load_preview_at_playhead(true);
             self.playback_started = Some((Instant::now(), self.playhead));
         } else {
             self.playback_started = None;
-            self.player.stop();
-            self.load_preview_at_playhead(false);
+            self.player.pause();
+            if self.proxies_changed {
+                self.load_preview_at_playhead(false);
+            }
         }
     }
 
     fn load_preview_at_playhead(&mut self, realtime: bool) {
+        if self.proxies_changed {
+            self.revision = self.revision.wrapping_add(1);
+            self.proxies_changed = false;
+        }
         #[cfg(target_os = "macos")]
-        if realtime {
-            if let Err(error) = self.player.start_timeline(&self.project, self.playhead) {
+        {
+            let preview;
+            let project = if self.use_proxies
+                && !self.proxies.is_empty()
+                && !self.player.timeline_matches(self.revision)
+            {
+                preview = {
+                    let mut project = self.project.clone();
+                    for asset in &mut project.assets {
+                        if let Some(proxy) = self.proxies.get(&asset.id) {
+                            *asset = proxy.clone();
+                        }
+                    }
+                    project
+                };
+                &preview
+            } else {
+                &self.project
+            };
+            if let Err(error) =
+                self.player
+                    .prepare_timeline(project, self.revision, self.playhead, realtime)
+            {
                 self.player.stop();
                 self.playing = false;
                 self.status = format!("Playback failed: {error}");
             }
-            return;
         }
-        let Some((_, clip_start, clip)) = self.project.clip_at(self.playhead) else {
-            self.player.stop();
-            return;
-        };
-        let Some(asset) = self.project.asset(clip.asset_id) else {
-            return;
-        };
-        let offset = (self.playhead - clip_start).clamp(0.0, clip.duration());
-        let source_time = clip.source_in + offset;
-        let volume = if clip.muted { 0.0 } else { clip.audio_gain };
-        if self
-            .player
-            .seek(clip.id, source_time, clip.source_out, realtime, volume)
+        #[cfg(not(target_os = "macos"))]
         {
-            return;
+            let Some((_, start, clip)) = self.index.clip_at(&self.project, self.playhead) else {
+                self.player.stop();
+                return;
+            };
+            let Some(asset) = self.index.asset(&self.project, clip.asset_id) else {
+                return;
+            };
+            let asset = if self.use_proxies {
+                self.proxies.get(&asset.id).unwrap_or(asset)
+            } else {
+                asset
+            };
+            let offset = (self.playhead - start).clamp(0.0, clip.duration());
+            self.player.start(
+                clip.id,
+                asset,
+                clip.source_in + offset,
+                (clip.duration() - offset).max(0.04),
+                realtime,
+                if clip.muted { 0.0 } else { clip.audio_gain },
+            );
         }
-        self.player.start(
-            clip.id,
-            asset,
-            source_time,
-            (clip.duration() - offset).max(0.04),
-            realtime,
-            volume,
-        );
     }
 
     fn save_project(&mut self, save_as: bool) {
@@ -308,7 +365,7 @@ impl FastCutApp {
             .project
             .clips
             .first()
-            .and_then(|clip| self.project.asset(clip.asset_id))
+            .and_then(|clip| self.index.asset(&self.project, clip.asset_id))
             .or_else(|| self.project.assets.first());
         let default_path = cuts_export_path(
             self.project_path.as_deref(),
@@ -360,6 +417,7 @@ impl FastCutApp {
                 self.import_rx = import_rx;
                 self.imports_pending = 0;
                 self.project = project;
+                self.project_changed();
                 self.project_path = Some(path.clone());
                 self.selected_clip = self.project.clips.first().map(|clip| clip.id);
                 self.selected_asset = self.project.assets.first().map(|asset| asset.id);
@@ -370,10 +428,17 @@ impl FastCutApp {
                 self.preview_texture = None;
                 self.preview_display_size = None;
                 self.filmstrips.clear();
+                self.frames_pending.clear();
+                self.proxies.clear();
+                self.proxies_pending.clear();
+                self.proxies_changed = false;
+                self.resident_assets.clear();
+                self.visible_assets.clear();
                 self.waveforms.clear();
                 let assets = self.project.assets.clone();
                 self.imports_pending += assets.len();
                 for asset in assets {
+                    self.frames_pending.insert(asset.id);
                     self.analysis.rebuild(asset);
                 }
                 let missing = self
@@ -495,6 +560,43 @@ impl FastCutApp {
         });
     }
 
+    fn maintain_previews(&mut self) {
+        let mut focus = Vec::new();
+        if let Some((index, _, _)) = self.index.clip_at(&self.project, self.playhead) {
+            for i in index.saturating_sub(1)..(index + 3).min(self.project.clips.len()) {
+                focus.push(self.project.clips[i].asset_id);
+            }
+        }
+        focus.extend(self.selected_asset);
+        focus.extend(self.visible_assets.iter().copied());
+        let mut seen = HashSet::new();
+        focus.retain(|id| seen.insert(*id));
+        self.analysis.set_focus(focus.clone(), self.playing);
+        // At most 16 full filmstrips: < 57 MiB at the maximum 240x240 RGBA size.
+        let mut resident: Vec<_> = focus.into_iter().take(16).collect();
+        for id in &self.resident_assets {
+            if resident.len() == 16 {
+                break;
+            }
+            if !resident.contains(id) {
+                resident.push(*id);
+            }
+        }
+        self.resident_assets = resident;
+        self.filmstrips
+            .retain(|id, _| self.resident_assets.contains(id));
+        for id in &self.resident_assets {
+            if !self.filmstrips.contains_key(id)
+                && !self.frames_pending.contains(id)
+                && let Some(asset) = self.index.asset(&self.project, *id)
+            {
+                self.filmstrips.insert(*id, vec![None; FRAME_COUNT]);
+                self.frames_pending.insert(*id);
+                self.analysis.frames(asset.clone());
+            }
+        }
+    }
+
     fn update_background_work(&mut self, ctx: &egui::Context) {
         // Bound texture uploads per UI update, including a warm-cache import.
         let started = Instant::now();
@@ -504,10 +606,11 @@ impl FastCutApp {
             };
             match event {
                 ImportEvent::Asset(asset) => {
+                    self.frames_pending.insert(asset.id);
                     self.selected_asset = Some(asset.id);
                     self.status = format!("{} ready — analyzing frames and audio…", asset.name);
                     self.project.assets.push(asset);
-                    self.dirty = true;
+                    self.project_changed();
                 }
                 ImportEvent::Metadata {
                     asset_id,
@@ -516,8 +619,8 @@ impl FastCutApp {
                     rotation,
                 } => {
                     let current_asset = self
-                        .project
-                        .clip_at(self.playhead)
+                        .index
+                        .clip_at(&self.project, self.playhead)
                         .map(|(_, _, clip)| clip.asset_id);
                     let mut changed = false;
                     if let Some(asset) = self.project.assets.iter_mut().find(|a| a.id == asset_id) {
@@ -529,7 +632,7 @@ impl FastCutApp {
                         asset.rotation = rotation;
                     }
                     if changed {
-                        self.dirty = true;
+                        self.project_changed();
                         if current_asset == Some(asset_id) {
                             self.load_preview_at_playhead(self.playing);
                         }
@@ -540,6 +643,9 @@ impl FastCutApp {
                     index,
                     image,
                 } => {
+                    if !self.resident_assets.contains(&asset_id) {
+                        continue;
+                    }
                     let frames = self
                         .filmstrips
                         .entry(asset_id)
@@ -557,6 +663,24 @@ impl FastCutApp {
                     self.analysis_failed = true;
                     self.status = error;
                 }
+                ImportEvent::ProxyFinished { asset_id, result } => {
+                    self.proxies_pending.remove(&asset_id);
+                    match result {
+                        Ok(proxy) => {
+                            self.proxies.insert(asset_id, proxy);
+                            self.proxies_changed = true;
+                            self.status = "Lightweight preview ready; exports use original footage"
+                                .to_owned();
+                            if !self.playing {
+                                self.load_preview_at_playhead(false);
+                            }
+                        }
+                        Err(error) => self.status = format!("Preview preparation failed: {error}"),
+                    }
+                }
+                ImportEvent::FramesFinished(id) => {
+                    self.frames_pending.remove(&id);
+                }
                 ImportEvent::Finished => {
                     self.imports_pending = self.imports_pending.saturating_sub(1);
                     if self.imports_pending == 0
@@ -568,13 +692,6 @@ impl FastCutApp {
                 }
             }
         }
-        if self.imports_pending > 0 {
-            ctx.request_repaint_after(std::time::Duration::from_millis(40));
-        }
-        if self.player.clip_id.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        }
-
         if let Some(frame) = self.player.latest() {
             self.preview_display_size = Some(Vec2::from(frame.display_size));
             let image = ColorImage::from_rgba_unmultiplied(frame.size, &frame.rgba);
@@ -614,13 +731,13 @@ impl FastCutApp {
         }
         #[cfg(target_os = "macos")]
         {
-            if !self.player.timeline_matches(&self.project) {
+            if !self.player.timeline_matches(self.revision) {
                 self.load_preview_at_playhead(true);
             }
             if let Some(time) = self.player.timeline_time() {
-                self.playhead = time.min(self.project.duration());
-                if self.playhead >= self.project.duration() - 0.000_02 {
-                    self.playhead = self.project.duration();
+                self.playhead = time.min(self.index.duration());
+                if self.playhead >= self.index.duration() - 0.000_02 {
+                    self.playhead = self.index.duration();
                     self.playing = false;
                     self.playback_started = None;
                     self.player.stop();
@@ -647,12 +764,12 @@ impl FastCutApp {
         } else if let Some((started, from)) = self.playback_started {
             self.playhead = from + started.elapsed().as_secs_f64();
         }
-        if self.playhead >= self.project.duration() {
-            self.playhead = self.project.duration();
+        if self.playhead >= self.index.duration() {
+            self.playhead = self.index.duration();
             self.playing = false;
             self.playback_started = None;
             self.player.stop();
-        } else if let Some((_, _, clip)) = self.project.clip_at(self.playhead)
+        } else if let Some((_, _, clip)) = self.index.clip_at(&self.project, self.playhead)
             && self.player.clip_id != Some(clip.id)
         {
             self.load_preview_at_playhead(true);
@@ -664,15 +781,15 @@ impl FastCutApp {
     fn seek_timeline(&mut self, time: f64) {
         self.playing = false;
         self.playback_started = None;
-        self.playhead = time.clamp(0.0, self.project.duration());
+        self.playhead = time.clamp(0.0, self.index.duration());
         self.load_preview_at_playhead(false);
     }
 
     fn step_frames(&mut self, frames: f64) {
         let fps = self
-            .project
-            .clip_at(self.playhead)
-            .and_then(|(_, _, clip)| self.project.asset(clip.asset_id))
+            .index
+            .clip_at(&self.project, self.playhead)
+            .and_then(|(_, _, clip)| self.index.asset(&self.project, clip.asset_id))
             .map(|asset| asset.fps)
             .unwrap_or(self.project.render.fps as f64)
             .max(1.0);
@@ -682,7 +799,7 @@ impl FastCutApp {
     fn jump_to_edit(&mut self, next: bool) {
         let epsilon = 0.000_1;
         let mut cursor = 0.0;
-        let mut target = if next { self.project.duration() } else { 0.0 };
+        let mut target = if next { self.index.duration() } else { 0.0 };
         for clip in &self.project.clips {
             if next {
                 if cursor > self.playhead + epsilon {
@@ -704,7 +821,7 @@ impl FastCutApp {
         };
         clip.muted = !clip.muted;
         let muted = clip.muted;
-        self.dirty = true;
+        self.project_changed();
         self.status = if muted {
             "Selected clip muted".to_owned()
         } else {
@@ -747,8 +864,8 @@ impl FastCutApp {
                 }
                 MenuCommand::ZoomFit => {
                     let usable_width = (ctx.screen_rect().width() - 80.0).max(200.0);
-                    self.pixels_per_second = if self.project.duration() > 0.0 {
-                        (usable_width / self.project.duration() as f32).clamp(8.0, 120.0)
+                    self.pixels_per_second = if self.index.duration() > 0.0 {
+                        (usable_width / self.index.duration() as f32).clamp(8.0, 120.0)
                     } else {
                         36.0
                     };
@@ -804,8 +921,8 @@ impl FastCutApp {
         }
         if zoom_fit {
             let usable_width = (ctx.screen_rect().width() - 80.0).max(200.0);
-            self.pixels_per_second = if self.project.duration() > 0.0 {
-                (usable_width / self.project.duration() as f32).clamp(8.0, 120.0)
+            self.pixels_per_second = if self.index.duration() > 0.0 {
+                (usable_width / self.index.duration() as f32).clamp(8.0, 120.0)
             } else {
                 36.0
             };
@@ -869,7 +986,7 @@ impl FastCutApp {
             self.seek_timeline(0.0);
         }
         if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::End)) {
-            self.seek_timeline(self.project.duration());
+            self.seek_timeline(self.index.duration());
         }
         if move_left {
             self.move_selected(-1);
@@ -992,81 +1109,90 @@ impl FastCutApp {
                     return;
                 }
 
-                let assets = self.project.assets.clone();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for asset in assets {
-                        let selected = self.selected_asset == Some(asset.id);
-                        let bg = if selected {
-                            Color32::from_rgb(39, 47, 55)
-                        } else {
-                            SURFACE
-                        };
-                        Frame::new()
-                            .fill(bg)
-                            .corner_radius(7.0)
-                            .inner_margin(Margin::same(7))
-                            .show(ui, |ui| {
-                                let response = ui
-                                    .horizontal(|ui| {
-                                        if let Some(texture) = self
-                                            .filmstrips
-                                            .get(&asset.id)
-                                            .and_then(|frames| frames.iter().flatten().next())
-                                        {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                Vec2::new(92.0, 54.0),
-                                                Sense::hover(),
-                                            );
-                                            ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
-                                            let image_size =
-                                                fit_size(texture.size_vec2(), rect.size());
-                                            ui.painter().image(
-                                                texture.id(),
-                                                Rect::from_center_size(rect.center(), image_size),
-                                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                                Color32::WHITE,
-                                            );
-                                        } else {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                Vec2::new(92.0, 54.0),
-                                                Sense::hover(),
-                                            );
-                                            ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
-                                        }
-                                        ui.vertical(|ui| {
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(&asset.name).size(12.5),
-                                                )
-                                                .truncate(),
-                                            );
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{}  |  {}x{}",
-                                                    format_time(asset.duration),
-                                                    asset.width,
-                                                    asset.height
-                                                ))
-                                                .size(10.5)
-                                                .color(TEXT_MUTED),
-                                            );
-                                            if ui.small_button("+ Timeline").clicked() {
-                                                self.add_asset_to_timeline(asset.id);
-                                            }
-                                        });
-                                    })
-                                    .response
-                                    .interact(Sense::click());
-                                if response.clicked() {
-                                    self.selected_asset = Some(asset.id);
-                                }
-                                if response.double_clicked() {
-                                    self.add_asset_to_timeline(asset.id);
-                                }
-                            });
-                        ui.add_space(7.0);
-                    }
-                });
+                egui::ScrollArea::vertical().show_rows(
+                    ui,
+                    76.0,
+                    self.project.assets.len(),
+                    |ui, range| {
+                        for index in range {
+                            let asset = &self.project.assets[index];
+                            let id = asset.id;
+                            self.visible_assets.push(id);
+                            let (rect, response) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 76.0),
+                                Sense::click(),
+                            );
+                            ui.painter().rect_filled(
+                                rect,
+                                7.0,
+                                if self.selected_asset == Some(id) {
+                                    Color32::from_rgb(39, 47, 55)
+                                } else {
+                                    SURFACE
+                                },
+                            );
+                            let image_rect = Rect::from_min_size(
+                                rect.min + Vec2::new(7.0, 11.0),
+                                Vec2::new(92.0, 54.0),
+                            );
+                            ui.painter().rect_filled(image_rect, 4.0, Color32::BLACK);
+                            if let Some(texture) = self
+                                .filmstrips
+                                .get(&id)
+                                .and_then(|frames| frames.iter().flatten().next())
+                            {
+                                ui.painter().image(
+                                    texture.id(),
+                                    Rect::from_center_size(
+                                        image_rect.center(),
+                                        fit_size(texture.size_vec2(), image_rect.size()),
+                                    ),
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            }
+                            let text_rect = Rect::from_min_max(
+                                rect.min + Vec2::new(106.0, 7.0),
+                                rect.max - Vec2::splat(7.0),
+                            );
+                            let painter = ui
+                                .painter()
+                                .with_clip_rect(text_rect.intersect(ui.clip_rect()));
+                            painter.text(
+                                text_rect.min,
+                                Align2::LEFT_TOP,
+                                &asset.name,
+                                FontId::proportional(12.5),
+                                Color32::WHITE,
+                            );
+                            painter.text(
+                                text_rect.min + Vec2::new(0.0, 20.0),
+                                Align2::LEFT_TOP,
+                                format!(
+                                    "{} | {}x{}",
+                                    format_time(asset.duration),
+                                    asset.width,
+                                    asset.height
+                                ),
+                                FontId::proportional(10.5),
+                                TEXT_MUTED,
+                            );
+                            let button = ui.put(
+                                Rect::from_min_size(
+                                    text_rect.min + Vec2::new(0.0, 41.0),
+                                    Vec2::new(82.0, 21.0),
+                                ),
+                                egui::Button::new("+ Timeline").small(),
+                            );
+                            if response.clicked() {
+                                self.selected_asset = Some(id);
+                            }
+                            if button.clicked() || response.double_clicked() {
+                                self.add_asset_to_timeline(id);
+                            }
+                        }
+                    },
+                );
             });
     }
 
@@ -1091,13 +1217,13 @@ impl FastCutApp {
                     ui.label(RichText::new("Select a timeline clip to edit it.").color(TEXT_MUTED));
                     return;
                 };
-                let Some(index) = self.project.clips.iter().position(|clip| clip.id == id) else {
+                let Some(index) = self.index.clip_index(id) else {
                     return;
                 };
                 let asset_id = self.project.clips[index].asset_id;
-                let asset = self.project.asset(asset_id).cloned();
+                let asset = self.index.asset(&self.project, asset_id).cloned();
                 if let Some(asset) = asset {
-                    ui.label(RichText::new(asset.name).strong());
+                    ui.label(RichText::new(&asset.name).strong());
                     ui.label(
                         RichText::new(format!(
                             "{} | {:.2} fps",
@@ -1108,7 +1234,21 @@ impl FastCutApp {
                         .color(TEXT_MUTED),
                     );
                     ui.separator();
+                    let pending = self.proxies_pending.contains(&asset_id);
+                    if !self.proxies.contains_key(&asset_id) {
+                        if ui.add_enabled(!pending, egui::Button::new(if pending { "Preparing preview…" } else { "Prepare lightweight preview" }))
+                            .on_hover_text("Create a smaller editing copy with faster seeking. Exports always use the original.")
+                            .clicked() {
+                            self.proxies_pending.insert(asset_id);
+                            self.analysis.prepare_proxy(asset.clone());
+                        }
+                    } else if ui.checkbox(&mut self.use_proxies, "Use lightweight previews").changed() {
+                        self.proxies_changed = true;
+                        self.load_preview_at_playhead(self.playing);
+                    }
+                    ui.separator();
                     let clip = &mut self.project.clips[index];
+                    let mut changed = false;
                     ui.label(RichText::new("SOURCE RANGE").size(10.0).color(TEXT_MUTED));
                     ui.horizontal(|ui| {
                         ui.label("In");
@@ -1121,7 +1261,7 @@ impl FastCutApp {
                             )
                             .changed()
                         {
-                            self.dirty = true;
+                            changed = true;
                         }
                     });
                     ui.horizontal(|ui| {
@@ -1135,7 +1275,7 @@ impl FastCutApp {
                             )
                             .changed()
                         {
-                            self.dirty = true;
+                            changed = true;
                         }
                     });
                     ui.label(
@@ -1144,11 +1284,12 @@ impl FastCutApp {
                     );
                     ui.add_space(12.0);
                     ui.label(RichText::new("AUDIO").size(10.0).color(TEXT_MUTED));
-                    ui.checkbox(&mut clip.muted, "Mute clip");
-                    ui.add_enabled(
+                    changed |= ui.checkbox(&mut clip.muted, "Mute clip").changed();
+                    changed |= ui.add_enabled(
                         !clip.muted,
                         egui::Slider::new(&mut clip.audio_gain, 0.0..=2.0).text("Gain"),
-                    );
+                    ).changed();
+                    if changed { self.project_changed(); self.load_preview_at_playhead(self.playing); }
                     ui.add_space(18.0);
                     ui.horizontal(|ui| {
                         if icon_button(ui, EditorIcon::ArrowLeft, "Move clip left").clicked() {
@@ -1186,8 +1327,8 @@ impl FastCutApp {
         let source_size = self
             .preview_display_size
             .or_else(|| {
-                let (_, _, clip) = self.project.clip_at(self.playhead)?;
-                let asset = self.project.asset(clip.asset_id)?;
+                let (_, _, clip) = self.index.clip_at(&self.project, self.playhead)?;
+                let asset = self.index.asset(&self.project, clip.asset_id)?;
                 let (width, height) = if matches!(asset.rotation, 90 | 270) {
                     (asset.height, asset.width)
                 } else {
@@ -1249,7 +1390,7 @@ impl FastCutApp {
                 );
                 ui.label(RichText::new("/").color(TEXT_MUTED));
                 ui.label(
-                    RichText::new(format_time(self.project.duration()))
+                    RichText::new(format_time(self.index.duration()))
                         .monospace()
                         .size(14.0)
                         .color(TEXT_MUTED),
@@ -1319,10 +1460,10 @@ impl FastCutApp {
                     ui,
                     &mut self.timeline_active,
                     &mut self.pixels_per_second,
-                    self.project.duration(),
+                    self.index.duration(),
                 );
                 let track_height = 132.0;
-                let total_width = (self.project.duration() as f32 * self.pixels_per_second)
+                let total_width = (self.index.duration() as f32 * self.pixels_per_second)
                     .max(ui.available_width() - TIMELINE_LEADING_SPACE);
                 egui::ScrollArea::horizontal()
                     .id_salt("timeline_scroll")
@@ -1358,13 +1499,13 @@ impl FastCutApp {
                         );
 
                         let step = ruler_step(self.pixels_per_second);
-                        let mut tick = 0.0;
-                        while tick
-                            <= self
-                                .project
-                                .duration()
-                                .max(total_width as f64 / self.pixels_per_second as f64)
-                        {
+                        let viewport = ui.clip_rect();
+                        let from =
+                            ((viewport.left() - origin_x) / self.pixels_per_second).max(0.0) as f64;
+                        let to = ((viewport.right() - origin_x) / self.pixels_per_second).max(0.0)
+                            as f64;
+                        let mut tick = (from / step).floor() * step;
+                        while tick <= to {
                             let x = origin_x + tick as f32 * self.pixels_per_second;
                             ui.painter().line_segment(
                                 [Pos2::new(x, ruler_y + 18.0), Pos2::new(x, ruler_y + 27.0)],
@@ -1393,13 +1534,24 @@ impl FastCutApp {
                             &ruler_seek,
                             origin_x,
                             self.pixels_per_second,
-                            self.project.duration(),
+                            self.index.duration(),
                         );
 
-                        let mut cursor = 0.0;
                         let mut select = None;
-                        for index in 0..self.project.clips.len() {
+                        let mut edited = false;
+                        // Include a minimum-width clip overlapping the left edge,
+                        // and retain the selected widget while a drag leaves view.
+                        let visible = self
+                            .index
+                            .visible(from - 12.0 / self.pixels_per_second as f64, to);
+                        let selected = self
+                            .selected_clip
+                            .and_then(|id| self.index.clip_index(id))
+                            .filter(|i| !visible.contains(i));
+                        for index in visible.chain(selected) {
+                            let cursor = self.index.start(index);
                             let clip = self.project.clips[index].clone();
+                            self.visible_assets.push(clip.asset_id);
                             let width = (clip.duration() as f32 * self.pixels_per_second).max(12.0);
                             let rect = Rect::from_min_size(
                                 Pos2::new(
@@ -1425,7 +1577,7 @@ impl FastCutApp {
                                 StrokeKind::Inside,
                             );
 
-                            if let Some(asset) = self.project.asset(clip.asset_id) {
+                            if let Some(asset) = self.index.asset(&self.project, clip.asset_id) {
                                 let video_rect = Rect::from_min_max(
                                     rect.min + Vec2::splat(4.0),
                                     Pos2::new(rect.max.x - 4.0, rect.min.y + 73.0),
@@ -1478,7 +1630,7 @@ impl FastCutApp {
                                 &response,
                                 origin_x,
                                 self.pixels_per_second,
-                                self.project.duration(),
+                                self.index.duration(),
                             ) {
                                 select = Some(clip.id);
                                 requested_seek = Some(time);
@@ -1510,24 +1662,27 @@ impl FastCutApp {
                                     left.drag_delta().x as f64 / self.pixels_per_second as f64;
                                 self.project.clips[index].source_in =
                                     (clip.source_in + delta).clamp(0.0, clip.source_out - 0.04);
-                                self.dirty = true;
+                                edited = true;
                             }
                             if right.dragged()
-                                && let Some(asset) = self.project.asset(clip.asset_id)
+                                && let Some(asset) = self.index.asset(&self.project, clip.asset_id)
                             {
                                 let delta =
                                     right.drag_delta().x as f64 / self.pixels_per_second as f64;
                                 self.project.clips[index].source_out = (clip.source_out + delta)
                                     .clamp(clip.source_in + 0.04, asset.duration);
-                                self.dirty = true;
+                                edited = true;
                             }
-                            cursor += clip.duration();
+                        }
+                        if edited {
+                            self.project_changed();
+                            self.load_preview_at_playhead(self.playing);
                         }
                         if let Some(id) = select {
                             self.selected_clip = Some(id);
                         }
 
-                        let content_width = self.project.duration() as f32 * self.pixels_per_second;
+                        let content_width = self.index.duration() as f32 * self.pixels_per_second;
                         let empty_rect = Rect::from_min_max(
                             Pos2::new(origin_x + content_width, track_y),
                             Pos2::new(origin_x + total_width, end_y),
@@ -1542,7 +1697,7 @@ impl FastCutApp {
                                 &empty_seek,
                                 origin_x,
                                 self.pixels_per_second,
-                                self.project.duration(),
+                                self.index.duration(),
                             ) {
                                 requested_seek = Some(time);
                             }
@@ -1588,7 +1743,10 @@ impl FastCutApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if self.imports_pending > 0 {
+                    if self.imports_pending > 0
+                        || !self.frames_pending.is_empty()
+                        || !self.proxies_pending.is_empty()
+                    {
                         ui.spinner();
                     }
                     ui.label(RichText::new(&self.status).size(10.5).color(TEXT_MUTED));
@@ -1768,6 +1926,7 @@ impl eframe::App for FastCutApp {
         self.keyboard(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
+        self.visible_assets.clear();
         self.timeline_panel(ctx);
         self.media_panel(ctx);
         self.inspector_panel(ctx);
@@ -1777,6 +1936,19 @@ impl eframe::App for FastCutApp {
         self.help_window(ctx);
         self.shortcuts_window(ctx);
         self.file_drop_overlay(ctx);
+        self.maintain_previews();
+        // Schedule after input handling as well: a newly started seek, import,
+        // cache reload, or export must wake even if the editor was idle before it.
+        if self.player.needs_repaint() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        if self.imports_pending > 0
+            || !self.frames_pending.is_empty()
+            || !self.proxies_pending.is_empty()
+            || self.render_rx.is_some()
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
     }
 }
 

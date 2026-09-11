@@ -63,9 +63,9 @@ For Codex, Claude, and other automation tools, see [local agent setup](LOCAL_AGE
 3. Media appears immediately. Timeline frames and waveform sections appear as they are decoded, independently of each other. Reopening unchanged media reuses cached analysis. The status bar reports when analysis is complete.
 4. Double-click an item in Media or select **+ Timeline** to append the whole source to the end of the sequence.
 
-The preview and timeline frames follow the video’s original display shape, including portrait, square, and rotated footage. Background analysis uses a limited number of workers to keep editing responsive. Switching projects cancels pending analysis for the previous project.
+The preview and timeline frames follow the video’s original display shape, including portrait, square, and rotated footage. Background analysis uses a limited number of workers to keep editing responsive. Development builds prioritize footage near the playhead and visible media, and defer new thumbnail, waveform, and lightweight-preview jobs while playing; active jobs can finish. Pausing playback resumes analysis. Switching projects cancels pending analysis for the previous project.
 
-Analysis is stored in the system cache directory under `fastCutVid/analysis-v1` (`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows, and `$XDG_CACHE_HOME` or `~/.cache` on Linux). Set `FASTCUT_CACHE_DIR` to choose a different base folder. Cache entries are rebuilt when source size or modification time changes; unreadable entries are regenerated automatically. Old entries are pruned toward 256 MiB when opening the app or another project. The cache can be deleted safely.
+Analysis is stored in the system cache directory under `fastCutVid/analysis-v1` (`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows, and `$XDG_CACHE_HOME` or `~/.cache` on Linux). Set `FASTCUT_CACHE_DIR` to choose a different base folder. Cache entries are rebuilt when source size or modification time changes; unreadable entries are regenerated automatically. Old entries are pruned toward 256 MiB when opening the app or another project. Thumbnail and waveform cache files can be deleted safely while the app is closed. Development builds retain at most 16 full filmstrips in graphics memory (under 57 MiB); other filmstrips reload from the disk cache as you navigate.
 
 Dropping a valid `.fastcut`, `.fastcut.json`, or `.json` file opens that complete project instead of adding it to the current cut. Save the current project before opening another timeline if its changes matter.
 
@@ -91,6 +91,16 @@ On macOS, the native menu bar exposes the same actions without requiring shortcu
 - **View:** Zoom the timeline in, out, or fit the complete sequence.
 - **Window** and **Help:** Standard macOS window controls, quick start, and shortcut reference.
 
+## Lightweight previews (development builds)
+
+Select a timeline clip and choose **Prepare lightweight preview** in the inspector. This creates a disposable H.264 editing copy with a maximum edge of 960 pixels and frequent keyframes for seeking. Preparation takes time and uses additional disk space; it starts or resumes queued work when playback is paused. The original remains usable during preparation.
+
+When ready, **Use lightweight previews** switches prepared sources between their editing copies and originals. This toggle applies across the current project. Exports and saved `.fastcut` files always use the original media. Video timing, display geometry, and audio presence are checked before adopting a copy. If preparation fails, continue using the original.
+
+Copies live in `fastCutVid/analysis-v1/proxies-v1` under the configured cache folder. After reopening a project, use **Prepare lightweight preview** again to reuse an existing valid copy. These larger files are separate from the 256 MiB thumbnail/waveform pruning budget; delete the proxy folder with the app closed to reclaim space.
+
+Development builds also retain the macOS playback composition across play/pause and combine rapid scrub requests. Once a paused frame has arrived, playback no longer requests continuous redraws. Timeline and media-bin layout visits visible entries, with indexed clip timing and asset lookup for large projects.
+
 ## Edit the sequence
 
 - **Trim:** Drag the left or right edge of a clip. The inspector can also edit exact source-in and source-out seconds.
@@ -115,7 +125,9 @@ If the status bar reports missing media, restore the files at the recorded paths
 - **Export cuts** defaults to the original project's folder and basename plus `-cutted.fastcut`. Without a saved project, it uses the first timeline clip's source video (or the first media asset if the timeline is empty). For example, `Interview.mov` suggests `Interview-cutted.fastcut` beside the video. You can change the name or folder in the dialog. Exporting writes a copy without changing the current project path or clearing unsaved edits; **Save** and **Save As** are unchanged.
 - **Export video** renders the sequence to MP4 using the resolution, frame rate, and codecs stored in the project.
 
-Export to a new destination; do not choose a source-media path. Wait for the status bar to report completion before moving or closing the output.
+Development builds automatically copy the video stream for eligible cuts from one H.264 source when its resolution, integer frame rate, pixel aspect, and pixel format already match the export settings. This path requires no reordered video frames, frame-aligned ends, and keyframe-aligned starts. Rotated footage, mixed sources, resizing, uncertain timing, and other cases use normal encoding. Audio is always processed normally, including gain, mute, and generated silence. The status bar identifies when video is being copied.
+
+Export to a new destination; do not choose a source-media path. The app rejects source destinations and only replaces the destination after the export succeeds. Wait for the status bar to report completion before moving or closing the output.
 
 ## Troubleshooting
 

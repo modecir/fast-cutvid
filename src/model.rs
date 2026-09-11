@@ -10,6 +10,73 @@ use uuid::Uuid;
 
 pub const FORMAT_VERSION: &str = "fastcut.timeline/v1";
 
+/// Disposable editor index. Rebuild after edits; never serialize derived timing.
+#[derive(Default, Clone)]
+pub struct TimelineIndex {
+    starts: Vec<f64>,
+    assets: HashMap<Uuid, usize>,
+    clips: HashMap<Uuid, usize>,
+}
+
+impl TimelineIndex {
+    pub fn new(project: &Project) -> Self {
+        let mut starts = Vec::with_capacity(project.clips.len() + 1);
+        starts.push(0.0);
+        for clip in &project.clips {
+            starts.push(starts.last().unwrap() + clip.duration());
+        }
+        Self {
+            starts,
+            assets: project
+                .assets
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.id, i))
+                .collect(),
+            clips: project
+                .clips
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.id, i))
+                .collect(),
+        }
+    }
+
+    pub fn duration(&self) -> f64 {
+        self.starts.last().copied().unwrap_or(0.0)
+    }
+    pub fn start(&self, index: usize) -> f64 {
+        self.starts[index]
+    }
+    pub fn clip_index(&self, id: Uuid) -> Option<usize> {
+        self.clips.get(&id).copied()
+    }
+    pub fn asset<'a>(&self, project: &'a Project, id: Uuid) -> Option<&'a MediaAsset> {
+        project.assets.get(*self.assets.get(&id)?)
+    }
+    pub fn clip_at<'a>(&self, project: &'a Project, time: f64) -> Option<(usize, f64, &'a Clip)> {
+        if !time.is_finite() || time < 0.0 || time > self.duration() || project.clips.is_empty() {
+            return None;
+        }
+        let i = self
+            .starts
+            .partition_point(|start| *start <= time)
+            .saturating_sub(1)
+            .min(project.clips.len() - 1);
+        Some((i, self.starts[i], &project.clips[i]))
+    }
+    pub fn visible(&self, from: f64, to: f64) -> std::ops::Range<usize> {
+        let count = self.starts.len().saturating_sub(1);
+        let first = self
+            .starts
+            .partition_point(|start| *start <= from)
+            .saturating_sub(1)
+            .min(count);
+        let end = self.starts.partition_point(|start| *start <= to).min(count);
+        first..end.max(first)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub format: String,
@@ -125,6 +192,7 @@ impl Project {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn clip_at(&self, time: f64) -> Option<(usize, f64, &Clip)> {
         let mut cursor = 0.0;
         for (index, clip) in self.clips.iter().enumerate() {
@@ -236,6 +304,50 @@ mod tests {
             clips: vec![clip],
             ..Project::default()
         }
+    }
+
+    #[test]
+    fn index_matches_linear_timing_after_edits_and_bounds_visible_work() {
+        let mut project = project_with_one_clip();
+        for _ in 0..10_000 {
+            let mut clip = project.clips[0].clone();
+            clip.id = Uuid::new_v4();
+            project.clips.push(clip);
+        }
+        for edit in 0..3 {
+            if edit == 1 {
+                project.clips[5].source_out -= 0.3;
+            }
+            if edit == 2 {
+                project.clips.remove(4);
+                project.clips.swap(0, 5);
+            }
+            let index = TimelineIndex::new(&project);
+            assert_eq!(index.duration(), project.duration());
+            for time in [
+                -1.0,
+                0.0,
+                2.99,
+                3.0,
+                15.0,
+                27_005.5,
+                index.duration(),
+                index.duration() + 0.1,
+            ] {
+                assert_eq!(index.clip_at(&project, time), project.clip_at(time));
+            }
+            let visible = index.visible(27_000.0, 27_060.0);
+            assert!(
+                visible.len() <= 22,
+                "Offscreen clips entered visible layout"
+            );
+            assert_eq!(
+                index.asset(&project, project.assets[0].id),
+                Some(&project.assets[0])
+            );
+            assert_eq!(index.clip_index(project.clips[5].id), Some(5));
+        }
+        assert!(TimelineIndex::default().visible(0.0, 10.0).is_empty());
     }
 
     #[test]

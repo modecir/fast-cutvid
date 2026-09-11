@@ -19,6 +19,7 @@ uuid = { version = "1.17", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.2"
+block2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSEvent", "NSMenu", "NSMenuItem"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "objc2-core-media", "objc2-core-video"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }

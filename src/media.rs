@@ -23,6 +23,9 @@ struct ProbeStream {
     width: Option<u32>,
     height: Option<u32>,
     avg_frame_rate: Option<String>,
+    start_time: Option<String>,
+    duration: Option<String>,
+    sample_aspect_ratio: Option<String>,
     #[serde(default)]
     side_data_list: Vec<ProbeSideData>,
     tags: Option<ProbeTags>,
@@ -43,7 +46,7 @@ struct ProbeFormat {
     duration: Option<String>,
 }
 
-pub fn probe(path: &Path) -> Result<MediaAsset> {
+fn probe_streams(path: &Path) -> Result<ProbeResult> {
     let output = Command::new(ffprobe_binary())
         .args([
             "-v",
@@ -59,7 +62,11 @@ pub fn probe(path: &Path) -> Result<MediaAsset> {
     if !output.status.success() {
         bail!("FFprobe could not read {}", path.display());
     }
-    let result: ProbeResult = serde_json::from_slice(&output.stdout)?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+pub fn probe(path: &Path) -> Result<MediaAsset> {
+    let result = probe_streams(path)?;
     let video = result
         .streams
         .iter()
@@ -271,6 +278,149 @@ fn parse_rate(value: &str) -> Option<f64> {
     let numerator: f64 = numerator.parse().ok()?;
     let denominator: f64 = denominator.parse().ok()?;
     (denominator != 0.0).then_some(numerator / denominator)
+}
+
+/// Reject a cached/generated proxy if stream placement or display shape differs.
+/// In particular, format duration alone cannot detect shifted audio tracks.
+pub fn verify_proxy(source: &Path, proxy: &Path, fps: f64) -> Result<()> {
+    let original = probe_streams(source)?;
+    let preview = probe_streams(proxy)?;
+    let tolerance = (1.0 / fps.max(1.0)).max(0.025);
+    for kind in ["video", "audio"] {
+        let original = original
+            .streams
+            .iter()
+            .find(|stream| stream.codec_type.as_deref() == Some(kind));
+        let preview = preview
+            .streams
+            .iter()
+            .find(|stream| stream.codec_type.as_deref() == Some(kind));
+        match (original, preview) {
+            (Some(a), Some(b)) => {
+                for (a, b) in [(&a.start_time, &b.start_time), (&a.duration, &b.duration)] {
+                    let a = a
+                        .as_deref()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .context("Source stream timing is unavailable")?;
+                    let b = b
+                        .as_deref()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .context("Preview stream timing is unavailable")?;
+                    anyhow::ensure!(
+                        (a - b).abs() <= tolerance,
+                        "Preview would shift source timing"
+                    );
+                }
+                if kind == "video" {
+                    let ratio = |stream: &ProbeStream| -> f64 {
+                        let sar = stream
+                            .sample_aspect_ratio
+                            .as_deref()
+                            .and_then(|v| v.split_once(':'))
+                            .and_then(|(a, b)| {
+                                Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?)
+                            })
+                            .unwrap_or(1.0);
+                        let ratio = stream.width.unwrap_or(0) as f64 * sar
+                            / stream.height.unwrap_or(0) as f64;
+                        let rotation = stream
+                            .side_data_list
+                            .iter()
+                            .find_map(|s| s.rotation)
+                            .or_else(|| stream.tags.as_ref()?.rotate.as_ref()?.parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        if matches!(normalize_rotation(rotation), 90 | 270) {
+                            1.0 / ratio
+                        } else {
+                            ratio
+                        }
+                    };
+                    let expected = ratio(a);
+                    let actual = ratio(b);
+                    anyhow::ensure!(
+                        expected.is_finite()
+                            && actual.is_finite()
+                            && (actual - expected).abs() / expected < 0.01,
+                        "Preview display shape differs from the source"
+                    );
+                }
+            }
+            (None, None) => {}
+            _ => bail!("Preview media tracks differ from the source"),
+        }
+    }
+    Ok(())
+}
+
+/// Disposable editing copy. Preserve timestamps and audio gaps, normalize
+/// display geometry, and use frequent keyframes to bound seek decode work.
+pub fn create_proxy(source: &Path, output: &Path, active: impl Fn() -> bool) -> Result<()> {
+    let mut child = Command::new(ffmpeg_binary())
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-nostdin",
+            "-threads",
+            "2",
+            "-copyts",
+            "-start_at_zero",
+            "-i",
+        ])
+        .arg(source)
+        .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf"])
+        .arg(format!(
+            "{},scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            display_scale(960)
+        ))
+        .args([
+            "-filter_threads",
+            "1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            "-g",
+            "15",
+            "-keyint_min",
+            "15",
+            "-bf",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-threads",
+            "2",
+            "-vsync",
+            "0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Could not start lightweight preview preparation")?;
+    loop {
+        if !active() {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Preview preparation cancelled");
+        }
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(
+                status.success(),
+                "Could not create a lightweight preview; the original remains available"
+            );
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 pub fn ffmpeg_binary() -> PathBuf {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stop continuous preview redraws when paused; retain macOS playback compositions across play/pause and coalesce rapid scrub requests.
+- Index timeline timing and asset lookups, track playback changes with revisions, and limit timeline/ruler/media-bin layout to visible entries.
+- Prioritize visible footage during analysis, defer new heavy analysis jobs during playback, bound result buffering and thumbnail texture residency, and reload evicted filmstrips from disk.
+- Add optional cached lightweight editing previews in the inspector while preserving original media for saved projects and exports.
+- Copy eligible H.264 video cuts without re-encoding, preserve audio processing, and use normal encoding for unsupported cuts. Reject source-media destinations and commit exports only after success.
+
 - Find standard Homebrew and MacPorts FFmpeg/FFprobe installations when launched from Finder, restoring timeline thumbnails and waveforms without shell configuration.
 
 ## [0.1.4](https://github.com/modecir/fast-cutvid/releases/tag/v0.1.4) — 2026-09-08

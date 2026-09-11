@@ -24,25 +24,25 @@ pub struct DecodedFrame {
     pub rgba: Vec<u8>,
 }
 
+struct Request {
+    clip_id: Uuid,
+    asset: MediaAsset,
+    source_time: f64,
+    length: f64,
+    realtime: bool,
+}
+
 #[derive(Default)]
 pub struct PreviewPlayer {
     pub clip_id: Option<Uuid>,
     receiver: Option<Receiver<DecodedFrame>>,
     stop: Option<Arc<AtomicBool>>,
+    running: Arc<AtomicBool>,
+    realtime: bool,
+    pending: Option<Request>,
 }
 
 impl PreviewPlayer {
-    pub fn seek(
-        &mut self,
-        _clip_id: Uuid,
-        _source_time: f64,
-        _source_end: f64,
-        _realtime: bool,
-        _volume: f32,
-    ) -> bool {
-        false
-    }
-
     pub fn start(
         &mut self,
         clip_id: Uuid,
@@ -52,7 +52,32 @@ impl PreviewPlayer {
         realtime: bool,
         _volume: f32,
     ) {
+        let request = Request {
+            clip_id,
+            asset: asset.clone(),
+            source_time,
+            length,
+            realtime,
+        };
+        if !self.realtime && !realtime && self.running.load(Ordering::Acquire) {
+            self.pending = Some(request);
+            return;
+        }
+        self.begin(request);
+    }
+
+    fn begin(&mut self, request: Request) {
         self.stop();
+        let Request {
+            clip_id,
+            asset,
+            source_time,
+            length,
+            realtime,
+        } = request;
+        self.realtime = realtime;
+        self.running = Arc::new(AtomicBool::new(true));
+        let running = self.running.clone();
         // Self-describing frames preserve portrait, square, and anamorphic media.
         let (sender, receiver) = sync_channel(2);
         let stop = Arc::new(AtomicBool::new(false));
@@ -67,13 +92,21 @@ impl PreviewPlayer {
                 sender,
                 stop_thread,
             );
+            running.store(false, Ordering::Release);
         });
         self.clip_id = Some(clip_id);
         self.receiver = Some(receiver);
         self.stop = Some(stop);
     }
 
-    pub fn latest(&self) -> Option<DecodedFrame> {
+    pub fn latest(&mut self) -> Option<DecodedFrame> {
+        if self.pending.is_some() {
+            if self.running.load(Ordering::Acquire) {
+                return None;
+            }
+            let request = self.pending.take().unwrap();
+            self.begin(request);
+        }
         let receiver = self.receiver.as_ref()?;
         let mut latest = None;
         while let Ok(frame) = receiver.try_recv() {
@@ -86,7 +119,17 @@ impl PreviewPlayer {
         None
     }
 
+    pub fn needs_repaint(&self) -> bool {
+        self.running.load(Ordering::Acquire) || self.pending.is_some()
+    }
+
+    pub fn pause(&mut self) {
+        self.stop();
+    }
+
     pub fn stop(&mut self) {
+        self.pending = None;
+        self.realtime = false;
         if let Some(stop) = self.stop.take() {
             stop.store(true, Ordering::Relaxed);
         }

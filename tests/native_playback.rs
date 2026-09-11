@@ -104,14 +104,9 @@ fn main() {
             .success()
     );
     let mut preview = PreviewPlayer::default();
-    preview.start_timeline(&project, 0.0).unwrap();
-    assert!(preview.timeline_matches(&project));
-    let mut edited = project.clone();
-    edited.clips[1].muted = false;
-    assert!(!preview.timeline_matches(&edited));
-    edited = project.clone();
-    edited.clips.swap(0, 2);
-    assert!(!preview.timeline_matches(&edited));
+    preview.prepare_timeline(&project, 1, 0.0, true).unwrap();
+    assert!(preview.timeline_matches(1));
+    assert!(!preview.timeline_matches(2));
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut previous_time = 0.0;
@@ -172,7 +167,7 @@ fn main() {
     let drift = (origin.elapsed().as_secs_f64() - (previous_time - from)).abs();
     assert!(drift < 0.15, "Playback lost {drift:.3}s at cut boundaries");
     preview.stop();
-    preview.start_timeline(&project, 1.7).unwrap();
+    preview.prepare_timeline(&project, 1, 1.7, true).unwrap();
     assert_eq!(preview.clip_id, Some(project.clips[3].id));
     let seek_deadline = Instant::now() + Duration::from_secs(5);
     let mut seek_frame = None;
@@ -186,10 +181,48 @@ fn main() {
     let frame = seek_frame.expect("Seeking into the sequence produced no frame");
     assert_eq!(frame.size, [90, 160]);
     assert!(frame.rgba[2] > 200 && frame.rgba[0] < 30);
+    // Hundreds of pointer updates retain the same composition and settle on
+    // the last target. Paused playback must stop asking for redraws afterwards.
+    preview.pause();
+    let identity = preview.player_identity();
+    for i in 0..200 {
+        preview
+            .prepare_timeline(&project, 1, (i % 24) as f64 / 10.0, false)
+            .unwrap();
+    }
+    preview.prepare_timeline(&project, 1, 1.7, false).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut settled_frame = None;
+    while Instant::now() < deadline {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
+        if let Some(frame) = preview.latest() {
+            settled_frame = Some(frame);
+        }
+        if settled_frame.is_some() && !preview.needs_repaint() {
+            break;
+        }
+    }
+    assert_eq!(
+        preview.player_identity(),
+        identity,
+        "Scrubbing rebuilt the player"
+    );
+    assert!(
+        !preview.needs_repaint(),
+        "Paused player continues redrawing"
+    );
+    assert!((preview.timeline_time().unwrap() - 1.7).abs() < 0.04);
+    assert_eq!(settled_frame.unwrap().size, [90, 160]);
+    preview.prepare_timeline(&project, 1, 1.7, true).unwrap();
+    assert_eq!(
+        preview.player_identity(),
+        identity,
+        "Resume rebuilt the player"
+    );
     preview.stop();
     let mut shortened = project.clone();
     shortened.clips.truncate(1);
-    preview.start_timeline(&shortened, 2.4).unwrap();
+    preview.prepare_timeline(&shortened, 2, 2.4, false).unwrap();
     assert!(preview.timeline_time().unwrap() <= shortened.duration());
     preview.stop();
     assert!(preview.timeline_time().is_none());
