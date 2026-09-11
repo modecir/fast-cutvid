@@ -28,6 +28,8 @@ FASTCUT_FFPROBE="$(brew --prefix)/bin/ffprobe" \
 /Applications/fastCutVid.app/Contents/MacOS/fast-cutvid
 ```
 
+Development builds after 0.1.4 automatically check `/opt/homebrew/bin`, `/usr/local/bin`, and `/opt/local/bin` after `PATH`. Standard Homebrew and MacPorts installations therefore work when launching from Finder. `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` still take priority when set.
+
 ### Windows x86-64
 
 Extract the ZIP to a writable directory, install a Windows FFmpeg build from the options on the [FFmpeg download page](https://ffmpeg.org/download.html), and add the directory containing `ffmpeg.exe` and `ffprobe.exe` to `PATH`. Restart the app after changing `PATH`. Run `fast-cutvid.exe`; this early release is unsigned and may show a Windows reputation prompt.
@@ -117,7 +119,7 @@ Export to a new destination; do not choose a source-media path. Wait for the sta
 
 ## Troubleshooting
 
-- **FFmpeg or FFprobe not found:** Confirm both commands work in a terminal, or set `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` before launching.
+- **FFmpeg or FFprobe not found:** Confirm both commands work in a terminal, or set `FASTCUT_FFMPEG` and `FASTCUT_FFPROBE` before launching (see the macOS command above). macOS playback uses AVFoundation and can work while timeline frames and waveforms are blank because those need FFmpeg and FFprobe. After fixing tool discovery, relaunch the app and reopen the project to rebuild its previews.
 - **Frames or waveform are still blank:** Background analysis may still be running. Check the status bar.
 - **A JSON project will not open:** Run `fast-cutvid --validate PROJECT.fastcut` or the equivalent Cargo command to see the structural error.
 - **A source is missing:** Relative paths resolve from the JSON file's directory. Check that relationship first.

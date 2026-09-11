@@ -62,7 +62,7 @@ Install [Rust](https://rustup.rs/) and [FFmpeg](https://ffmpeg.org/download.html
 cargo run --release
 ```
 
-If FFmpeg is not on `PATH`, point fastCutVid to the binaries:
+On macOS, development builds also look in `/opt/homebrew/bin`, `/usr/local/bin`, and `/opt/local/bin` after `PATH`, so Finder launches can find standard Homebrew and MacPorts installations. Explicit overrides take priority. For other installation locations, point fastCutVid to the binaries:
 
 ```bash
 FASTCUT_FFMPEG=/path/to/ffmpeg FASTCUT_FFPROBE=/path/to/ffprobe cargo run --release

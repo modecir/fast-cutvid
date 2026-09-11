@@ -1,6 +1,6 @@
 use std::{
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -273,12 +273,59 @@ fn parse_rate(value: &str) -> Option<f64> {
     (denominator != 0.0).then_some(numerator / denominator)
 }
 
-pub fn ffmpeg_binary() -> String {
-    std::env::var("FASTCUT_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_owned())
+pub fn ffmpeg_binary() -> PathBuf {
+    media_binary("ffmpeg", "FASTCUT_FFMPEG")
 }
 
-pub fn ffprobe_binary() -> String {
-    std::env::var("FASTCUT_FFPROBE").unwrap_or_else(|_| "ffprobe".to_owned())
+pub fn ffprobe_binary() -> PathBuf {
+    media_binary("ffprobe", "FASTCUT_FFPROBE")
+}
+
+fn media_binary(binary: &str, variable: &str) -> PathBuf {
+    let configured = std::env::var_os(variable);
+    #[cfg(target_os = "macos")]
+    {
+        resolve_macos_binary(
+            binary,
+            configured,
+            std::env::var_os("PATH").as_deref(),
+            &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"],
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        configured
+            .map(PathBuf::from)
+            .unwrap_or_else(|| binary.into())
+    }
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn resolve_macos_binary(
+    binary: &str,
+    configured: Option<std::ffi::OsString>,
+    search_path: Option<&std::ffi::OsStr>,
+    fallback_dirs: &[&str],
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Explicit overrides are authoritative, even when the path is invalid.
+    if let Some(path) = configured {
+        return path.into();
+    }
+    // Finder does not inherit the shell's PATH. Preserve PATH priority, then
+    // check the standard Apple silicon/Intel Homebrew and MacPorts locations.
+    search_path
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(fallback_dirs.iter().map(PathBuf::from))
+        .map(|directory| directory.join(binary))
+        .find(|path| {
+            path.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .unwrap_or_else(|| binary.into())
 }
 
 pub fn format_time(seconds: f64) -> String {
@@ -301,5 +348,96 @@ mod rotation_tests {
         assert_eq!(normalize_rotation(-90.0), 270);
         assert_eq!(normalize_rotation(450.0), 90);
         assert_eq!(normalize_rotation(179.8), 180);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod binary_tests {
+    use super::resolve_macos_binary;
+    use std::{ffi::OsString, fs, os::unix::fs::PermissionsExt, path::Path};
+
+    fn executable(directory: &Path, binary: &str) -> std::path::PathBuf {
+        fs::create_dir_all(directory).unwrap();
+        let path = directory.join(binary);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn finder_path_falls_back_to_package_manager_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let system = temp.path().join("system");
+        let package_manager = temp.path().join("package manager/bin");
+        for binary in ["ffmpeg", "ffprobe"] {
+            let expected = executable(&package_manager, binary);
+            for search_path in [Some(system.as_os_str()), None] {
+                assert_eq!(
+                    resolve_macos_binary(
+                        binary,
+                        None,
+                        search_path,
+                        &[package_manager.to_str().unwrap()],
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_override_and_path_keep_priority_over_fallbacks() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let fallback = temp.path().join("fallback");
+        let expected = executable(&first, "ffprobe");
+        executable(&second, "ffprobe");
+        executable(&fallback, "ffprobe");
+        let search_path = std::env::join_paths([&first, &second]).unwrap();
+        let fallbacks = [fallback.to_str().unwrap()];
+        assert_eq!(
+            resolve_macos_binary("ffprobe", None, Some(&search_path), &fallbacks),
+            expected
+        );
+        let configured = OsString::from("/custom tools/missing-ffprobe");
+        assert_eq!(
+            resolve_macos_binary(
+                "ffprobe",
+                Some(configured.clone()),
+                Some(&search_path),
+                &fallbacks,
+            ),
+            Path::new(&configured)
+        );
+    }
+
+    #[test]
+    fn skips_non_executable_files_directories_and_broken_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let non_executable = temp.path().join("non-executable");
+        let directory = temp.path().join("directory");
+        let broken_link = temp.path().join("broken-link");
+        let fallback = temp.path().join("fallback");
+        let path = executable(&non_executable, "ffmpeg");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::create_dir_all(directory.join("ffmpeg")).unwrap();
+        fs::create_dir_all(&broken_link).unwrap();
+        std::os::unix::fs::symlink("missing", broken_link.join("ffmpeg")).unwrap();
+        let expected = executable(&fallback, "ffmpeg");
+        let search_path = std::env::join_paths([non_executable, directory, broken_link]).unwrap();
+        assert_eq!(
+            resolve_macos_binary(
+                "ffmpeg",
+                None,
+                Some(&search_path),
+                &[fallback.to_str().unwrap()],
+            ),
+            expected
+        );
+        assert_eq!(
+            resolve_macos_binary("ffmpeg", None, Some(&search_path), &[]),
+            Path::new("ffmpeg")
+        );
     }
 }
