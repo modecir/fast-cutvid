@@ -125,3 +125,74 @@ fn preview_uses_source_dimensions_without_a_landscape_canvas() {
         preview.stop();
     }
 }
+
+#[test]
+fn rapid_scrubs_settle_on_the_latest_frame_and_stop_polling() {
+    use std::{
+        process::Command,
+        thread,
+        time::{Duration, Instant},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("scrub.mp4");
+    assert!(
+        Command::new(media::ffmpeg_binary())
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=30:duration=1",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1"
+            ])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let asset = media::probe(&path).unwrap();
+    let mut preview = player::PreviewPlayer::default();
+    for i in 0..200 {
+        preview.start(
+            uuid::Uuid::new_v4(),
+            &asset,
+            (i % 20) as f64 / 30.0,
+            0.03,
+            false,
+            0.0,
+        );
+    }
+    let final_id = uuid::Uuid::new_v4();
+    preview.start(final_id, &asset, 0.8, 0.03, false, 0.0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut result = None;
+    while Instant::now() < deadline {
+        if let Some(frame) = preview.latest() {
+            result = Some(frame);
+        }
+        if result.is_some() && !preview.needs_repaint() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(preview.clip_id, Some(final_id));
+    assert!(!preview.needs_repaint(), "Paused decoder keeps polling");
+    let result = result.expect("Latest scrub produced no frame");
+    preview.start(final_id, &asset, 0.8, 0.03, false, 0.0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reference = loop {
+        if let Some(frame) = preview.latest() {
+            break frame;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(
+        result.rgba, reference.rgba,
+        "Obsolete scrub frame was displayed"
+    );
+}

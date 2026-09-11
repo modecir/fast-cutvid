@@ -153,6 +153,8 @@ Rust / egui UI
       └── FFmpeg normalized clip render ── concat ── MP4
 ```
 
+Development builds retain playback across pauses, coalesce scrubbing, virtualize large timelines, and offer optional lightweight preview copies. See the [operator guide](docs/OPERATOR_GUIDE.md#lightweight-previews-development-builds) for preview and export behavior.
+
 On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles analysis and export. Windows and Linux currently use a silent FFmpeg preview backend while native playback support is planned.
 
 ## Roadmap
@@ -162,7 +164,7 @@ On macOS, AVFoundation handles synchronized interactive playback; FFmpeg handles
 - Undo/redo history
 - Hardware-accelerated export presets
 - Windows Media Foundation and Linux GStreamer native playback backends
-- Proxy media and relinking
+- Automatic proxy management and media relinking
 - Signed and notarized installers
 
 ## Publishing a release

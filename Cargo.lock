@@ -1163,6 +1163,7 @@ name = "fast-cutvid"
 version = "0.1.4"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "clap",
  "eframe",
  "image",

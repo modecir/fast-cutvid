@@ -1,4 +1,15 @@
-use std::{collections::HashMap, path::Path, slice};
+use block2::RcBlock;
+use objc2::runtime::Bool;
+use std::{
+    collections::HashMap,
+    path::Path,
+    slice,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow};
 use objc2::{AnyThread, MainThreadMarker, rc::Retained, runtime::AnyObject};
@@ -16,7 +27,7 @@ use objc2_core_video::{
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL, ns_string};
 use uuid::Uuid;
 
-use crate::model::{MediaAsset, Project};
+use crate::model::{Project, TimelineIndex};
 
 pub struct DecodedFrame {
     pub size: [usize; 2],
@@ -36,16 +47,37 @@ pub struct PreviewPlayer {
     source_end: f64,
     rotation: i32,
     timeline: Option<Project>,
+    index: TimelineIndex,
+    revision: Option<u64>,
+    playing: bool,
+    requested_seek: Option<f64>,
+    seek: Option<(f64, Arc<AtomicU8>, Instant)>,
+    awaiting_frame: Option<Instant>,
 }
 
 impl PreviewPlayer {
     /// Assemble source ranges once. Cut boundaries are handled by AVFoundation,
     /// without a UI-thread seek, decoder replacement, or audio restart.
     #[allow(deprecated)] // Synchronous local-file track discovery; no network assets.
-    pub fn start_timeline(&mut self, project: &Project, time: f64) -> Result<()> {
+    pub fn prepare_timeline(
+        &mut self,
+        project: &Project,
+        revision: u64,
+        time: f64,
+        playing: bool,
+    ) -> Result<()> {
+        if self.timeline_matches(revision) {
+            self.request_seek(time, playing);
+            return Ok(());
+        }
+        if project.clips.is_empty() {
+            self.stop();
+            return Ok(());
+        }
+        let index = TimelineIndex::new(project);
         let mtm = MainThreadMarker::new().context("Playback requires the main thread")?;
         // Live edits can shorten the sequence beneath the current playhead.
-        let time = time.clamp(0.0, project.duration());
+        let time = time.clamp(0.0, index.duration());
         // SAFETY: All AVFoundation objects are created and used on the UI thread.
         // Source ranges have already been validated by the project model.
         unsafe {
@@ -63,8 +95,8 @@ impl PreviewPlayer {
             let mut sources = HashMap::new();
             let mut cursor = 0.0;
             for clip in &project.clips {
-                let asset = project
-                    .asset(clip.asset_id)
+                let asset = index
+                    .asset(project, clip.asset_id)
                     .context("Missing preview asset")?;
                 if let std::collections::hash_map::Entry::Vacant(entry) = sources.entry(asset.id) {
                     let url = NSURL::from_file_path(Path::new(&asset.path))
@@ -123,119 +155,115 @@ impl PreviewPlayer {
             let output = video_output();
             item.addOutput(&output);
             let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
-            player.seekToTime_toleranceBefore_toleranceAfter(
-                CMTime::with_seconds(time, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-            );
             self.stop();
-            self.clip_id = project.clip_at(time).map(|(_, _, clip)| clip.id);
-            self.source_start = time;
+            self.clip_id = index.clip_at(project, time).map(|(_, _, clip)| clip.id);
+            self.source_start = 0.0;
             self.source_end = cursor;
             self.timeline = Some(project.clone());
+            self.index = index;
+            self.revision = Some(revision);
             self.output = Some(output);
-            player.play();
             self.player = Some(player);
+            self.request_seek(time, playing);
         }
         Ok(())
     }
 
-    pub fn timeline_matches(&self, project: &Project) -> bool {
-        self.timeline
+    #[cfg(test)]
+    #[allow(dead_code)] // Used by the main-thread integration harness.
+    pub fn player_identity(&self) -> usize {
+        self.player
             .as_ref()
-            .is_some_and(|cached| cached.clips == project.clips && cached.assets == project.assets)
+            .map_or(0, |player| (&**player as *const AVPlayer) as usize)
+    }
+
+    pub fn timeline_matches(&self, revision: u64) -> bool {
+        self.player.is_some() && self.revision == Some(revision)
     }
 
     pub fn timeline_time(&mut self) -> Option<f64> {
+        self.advance_seek();
         let time = self.source_time()?;
         let project = self.timeline.as_ref()?;
-        self.clip_id = project.clip_at(time).map(|(_, _, clip)| clip.id);
+        self.clip_id = self
+            .index
+            .clip_at(project, time)
+            .map(|(_, _, clip)| clip.id);
         Some(time)
     }
 
-    pub fn seek(
-        &mut self,
-        clip_id: Uuid,
-        source_time: f64,
-        source_end: f64,
-        realtime: bool,
-        volume: f32,
-    ) -> bool {
-        if self.timeline.is_some() || self.clip_id != Some(clip_id) {
-            return false;
+    fn request_seek(&mut self, time: f64, playing: bool) {
+        self.playing = playing;
+        self.requested_seek = Some(time.clamp(0.0, self.source_end));
+        if let Some(player) = &self.player {
+            // Pause while seeking so repeated scrubs do not advance the clock.
+            unsafe { player.pause() };
         }
-        let Some(player) = self.player.as_ref() else {
-            return false;
-        };
-        // SAFETY: AVPlayer access is confined to the main UI thread.
-        unsafe {
-            player.setVolume(volume.clamp(0.0, 1.0));
-            player.seekToTime_toleranceBefore_toleranceAfter(
-                CMTime::with_seconds(source_time, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-            );
-            if realtime {
-                player.playImmediatelyAtRate(1.0);
-            } else {
-                player.pause();
-            }
-        }
-        self.source_start = source_time;
-        self.source_end = source_end;
-        true
+        self.advance_seek();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn start(
-        &mut self,
-        clip_id: Uuid,
-        asset: &MediaAsset,
-        source_time: f64,
-        length: f64,
-        realtime: bool,
-        volume: f32,
-    ) {
-        self.stop();
-        let Some(mtm) = MainThreadMarker::new() else {
-            eprintln!("AVPlayer must be created on the main thread");
-            return;
-        };
-        let Some(url) = NSURL::from_file_path(Path::new(&asset.path)) else {
-            eprintln!("AVPlayer could not create a file URL for {}", asset.path);
-            return;
-        };
-
-        // SAFETY: AVFoundation playback objects are created and used on the
-        // main UI thread. The output settings contain the documented CoreVideo
-        // pixel-format key and an NSNumber value.
-        unsafe {
-            let item = AVPlayerItem::playerItemWithURL(&url, mtm);
-            let output = video_output();
-            item.addOutput(&output);
-            let player = AVPlayer::playerWithPlayerItem(Some(&item), mtm);
-            player.setVolume(volume.clamp(0.0, 1.0));
-            player.setAutomaticallyWaitsToMinimizeStalling(false);
-            player.seekToTime_toleranceBefore_toleranceAfter(
-                CMTime::with_seconds(source_time, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-                CMTime::with_seconds(0.0, 60_000),
-            );
-            if realtime {
-                player.playImmediatelyAtRate(1.0);
-            } else {
-                player.pause();
+    fn advance_seek(&mut self) {
+        let completed = self.seek.is_some();
+        if let Some((_, completion, started)) = &self.seek {
+            if completion.load(Ordering::Acquire) == 0 && started.elapsed() < Duration::from_secs(5)
+            {
+                return;
             }
-            self.clip_id = Some(clip_id);
-            self.source_start = source_time;
-            self.source_end = source_time + length;
-            self.rotation = asset.rotation;
-            self.output = Some(output);
-            self.player = Some(player);
+            if completion.load(Ordering::Acquire) == 0 {
+                // A failed asset must not keep the UI polling forever.
+                self.playing = false;
+                self.requested_seek = None;
+            }
+            self.seek = None;
+            self.awaiting_frame = Some(Instant::now());
+        }
+        let Some(player) = &self.player else {
+            return;
+        };
+        if let Some(time) = self.requested_seek.take() {
+            let completion = Arc::new(AtomicU8::new(0));
+            let done = completion.clone();
+            // The callback owns only an atomic signal; stale completions after
+            // replacement cannot access AVPlayer or the editor on another thread.
+            let block = RcBlock::new(move |finished: Bool| {
+                done.store(if finished.as_bool() { 1 } else { 2 }, Ordering::Release);
+            });
+            self.seek = Some((time, completion, Instant::now()));
+            unsafe {
+                player.seekToTime_toleranceBefore_toleranceAfter_completionHandler(
+                    CMTime::with_seconds(time, 60_000),
+                    CMTime::with_seconds(0.0, 60_000),
+                    CMTime::with_seconds(0.0, 60_000),
+                    &block,
+                );
+            }
+        } else if completed && self.playing {
+            unsafe { player.play() };
         }
     }
 
-    pub fn latest(&self) -> Option<DecodedFrame> {
+    pub fn pause(&mut self) {
+        self.playing = false;
+        if let Some(player) = &self.player {
+            unsafe { player.pause() };
+        }
+    }
+
+    pub fn needs_repaint(&self) -> bool {
+        self.playing
+            || self.requested_seek.is_some()
+            || self.seek.is_some()
+            || self
+                .awaiting_frame
+                .is_some_and(|since| since.elapsed() < Duration::from_secs(2))
+    }
+
+    pub fn latest(&mut self) -> Option<DecodedFrame> {
+        self.advance_seek();
+        // Never display the result of an obsolete scrub request.
+        if self.seek.is_some() || self.requested_seek.is_some() {
+            return None;
+        }
         let player = self.player.as_ref()?;
         let output = self.output.as_ref()?;
         // SAFETY: Both AVPlayer and its video output live on the main thread.
@@ -278,8 +306,10 @@ impl PreviewPlayer {
                 .timeline
                 .as_ref()
                 .and_then(|project| {
-                    let (_, _, clip) = project.clip_at(display_time.seconds())?;
-                    project.asset(clip.asset_id).map(|asset| asset.rotation)
+                    let (_, _, clip) = self.index.clip_at(project, display_time.seconds())?;
+                    self.index
+                        .asset(project, clip.asset_id)
+                        .map(|asset| asset.rotation)
                 })
                 .unwrap_or(self.rotation);
             let (size, rgba) = rotate_rgba([width, height], rgba, rotation);
@@ -291,6 +321,7 @@ impl PreviewPlayer {
             if matches!(rotation, 90 | 270) {
                 display_size.swap(0, 1);
             }
+            self.awaiting_frame = None;
             Some(DecodedFrame {
                 size,
                 display_size,
@@ -300,6 +331,12 @@ impl PreviewPlayer {
     }
 
     pub fn source_time(&self) -> Option<f64> {
+        if let Some(time) = self
+            .requested_seek
+            .or_else(|| self.seek.as_ref().map(|s| s.0))
+        {
+            return Some(time);
+        }
         let player = self.player.as_ref()?;
         // SAFETY: AVPlayer access is confined to the main UI thread.
         let seconds = unsafe { player.currentTime().seconds() };
@@ -318,6 +355,11 @@ impl PreviewPlayer {
         self.output = None;
         self.clip_id = None;
         self.timeline = None;
+        self.revision = None;
+        self.playing = false;
+        self.seek = None;
+        self.requested_seek = None;
+        self.awaiting_frame = None;
     }
 }
 
